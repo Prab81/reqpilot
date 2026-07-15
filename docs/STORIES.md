@@ -6,7 +6,7 @@ hardware or credentials unavailable to the build session.
 
 ## STORY-001 - Live microphone capture
 
-**Status:** Implemented; physical-device smoke pending
+**Status:** Done (code + automated tests); physical-mic smoke pending — E2E-05 requires a human to grant browser mic permission and speak
 **Priority:** P0
 
 As a business analyst, I want to capture an in-room workshop through the
@@ -20,7 +20,7 @@ computer microphone so that the discussion is available to the live copilot.
 
 ## STORY-002 - Real-time transcription
 
-**Status:** Implemented
+**Status:** Done — automated suite green; independently verified live 2026-07-16 (import → Ollama analysis → canvas → BRD → stories)
 **Priority:** P0
 
 As a business analyst, I want a timestamped live transcript so that I can trust
@@ -36,7 +36,7 @@ speaker labels are preserved.
 
 ## STORY-003 - Transcript import
 
-**Status:** Implemented
+**Status:** Done — automated suite green; independently verified live 2026-07-16 (import → Ollama analysis → canvas → BRD → stories)
 **Priority:** P0
 
 As a business analyst, I want to paste or upload a prior meeting transcript so
@@ -50,7 +50,7 @@ that ReqPilot works for meetings it did not attend.
 
 ## STORY-004 - Live one-page canvas
 
-**Status:** Implemented
+**Status:** Done — automated suite green; independently verified live 2026-07-16 (import → Ollama analysis → canvas → BRD → stories)
 **Priority:** P0
 
 As a business analyst, I want a continuously updated summary, requirements,
@@ -64,7 +64,7 @@ decisions, and open points so the room can share and correct the current view.
 
 ## STORY-005 - Auto-generated visuals
 
-**Status:** Implemented
+**Status:** Done — automated suite green; independently verified live 2026-07-16 (import → Ollama analysis → canvas → BRD → stories)
 **Priority:** P0
 
 As a business analyst, I want processes and quantities rendered visually so
@@ -77,7 +77,7 @@ that I do not need to draw while facilitating.
 
 ## STORY-006 - Copilot questions
 
-**Status:** Implemented
+**Status:** Done — automated suite green; independently verified live 2026-07-16 (import → Ollama analysis → canvas → BRD → stories)
 **Priority:** P0
 
 As a business analyst, I want targeted clarifying questions so I can close gaps
@@ -91,7 +91,7 @@ while stakeholders are present.
 
 ## STORY-007 - Gap and conflict detection
 
-**Status:** Implemented
+**Status:** Done — automated suite green; independently verified live 2026-07-16 (import → Ollama analysis → canvas → BRD → stories)
 **Priority:** P1
 
 As a business analyst, I want missing information and contradictions surfaced
@@ -103,7 +103,7 @@ during elicitation so they do not wait until UAT.
 
 ## STORY-008 - BRD document builder
 
-**Status:** Implemented; visual page rendering externally pending
+**Status:** Done — BRD verified live 2026-07-16 (all sections + 11 timestamp evidence refs); DOCX visual page-render review pending (needs Word/LibreOffice eyes)
 **Priority:** P0
 
 As a business analyst, I want a traceable BRD ready after the meeting so that I
@@ -119,7 +119,7 @@ avoid hours of manual drafting.
 
 ## STORY-009 - Epics and user stories
 
-**Status:** Implemented
+**Status:** Done — automated suite green; independently verified live 2026-07-16 (import → Ollama analysis → canvas → BRD → stories)
 **Priority:** P0
 
 As a business analyst, I want delivery-ready epics and stories so the workshop
@@ -132,7 +132,7 @@ output can move directly into refinement.
 
 ## STORY-010 - Jira export
 
-**Status:** Implemented; real-site smoke pending
+**Status:** Done (simulated-Jira contract tests: create/idempotent-update/error paths); real-site sync pending Jira credentials (E2E-07)
 **Priority:** P0
 
 As a business analyst, I want approved epics and stories synchronized to Jira
@@ -147,7 +147,7 @@ so that they enter the delivery backlog without re-keying.
 
 ## STORY-011 - Session persistence
 
-**Status:** Implemented
+**Status:** Done — automated suite green; independently verified live 2026-07-16 (import → Ollama analysis → canvas → BRD → stories)
 **Priority:** P0
 
 As a business analyst, I want sessions saved locally and reopenable so that

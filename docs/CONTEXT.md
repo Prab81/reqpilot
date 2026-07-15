@@ -199,6 +199,38 @@ Mac access.
 
 ---
 
+## [2026-07-16] — MVP built and independently verified; all three phases landed in one push
+**Type:** Discovery
+**Impact:** High
+
+### Context
+The three parallel build agents were killed mid-work by an API session limit; on
+resume they completed not just Phase-Live but the full local MVP (import + delivery
+included), committed in three commits, and rewrote ARCHITECTURE/TEST_SCENARIOS to
+describe the implemented system.
+
+### Decision / Finding
+Main session independently verified rather than trusting agent claims:
+- `pytest -q`: **114 passed, 1 skipped (2.76 s)**; opt-in real-model ASR tests
+  (`REQPILOT_REAL_ASR_TEST=1`): **3 passed** against the on-disk Parakeet/Zipformer models.
+- Live E2E against the running server (127.0.0.1:8765, provider=ollama/qwen3:8b):
+  imported a 7-utterance leave-approval transcript through the UI → analysis produced
+  7 correct requirements, 6 targeted questions (incl. the manager-unavailable edge
+  case), 4 NFR/edge gaps, a valid process flowchart, the integration decision, and a
+  metric; BRD generated with all sections + 11 timestamp evidence refs; 2 epics +
+  traceable Gherkin stories generated. Zero browser console errors.
+- **Observed limitation:** qwen3:8b hallucinated the metric's peak value (1200 — not
+  in the transcript). Quantitative canvas items need evidence-check before use;
+  consider a stricter numeric-grounding rule in the metrics prompt (backlog).
+
+### Implications
+Remaining external validations (tracked in TEST_SCENARIOS): E2E-05 human mic smoke,
+E2E-06 macOS hardware run, E2E-07 real Jira sync with credentials, DOCX visual review.
+Stories 001–011 Done (with those pendings noted); STORY-012 (template packs) is the
+only backlog item. Next session: Prabuddh's first real dogfood — a live mic workshop.
+
+---
+
 ## [2026-07-16] - Complete local MVP delivered
 **Type:** Delivery decision
 **Impact:** High
