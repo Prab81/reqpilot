@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#f7f8f4">
+  <title>ReqPilot — Live requirements copilot</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <a class="skip-link" href="#workspace">Skip to workspace</a>
+
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="ReqPilot home">
+      <span class="brand-mark" aria-hidden="true">R</span>
+      <span><strong>ReqPilot</strong><small>Live requirements copilot</small></span>
+    </a>
+
+    <div class="session-identity">
+      <span class="eyebrow">Current session</span>
+      <span id="sessionTitle" class="session-title">Untitled discovery</span>
+    </div>
+
+    <div class="topbar-actions">
+      <button id="openSessions" class="button button-quiet" type="button" aria-haspopup="dialog">
+        <span aria-hidden="true">↺</span> Sessions
+      </button>
+      <button id="exportBrd" class="button button-quiet" type="button" disabled>
+        <span aria-hidden="true">↓</span> Export BRD
+      </button>
+    </div>
+  </header>
+
+  <div id="errorBanner" class="banner banner-error" role="alert" hidden>
+    <span id="errorText"></span>
+    <button id="dismissError" type="button" aria-label="Dismiss error">×</button>
+  </div>
+
+  <section class="control-strip" aria-label="Session recording controls">
+    <div class="recording-state">
+      <span id="statusDot" class="status-dot" data-state="idle" aria-hidden="true"></span>
+      <div>
+        <strong id="statusLabel">Ready for a new session</strong>
+        <span id="statusDetail">Your audio and notes stay on this machine.</span>
+      </div>
+    </div>
+
+    <div class="mic-picker">
+      <label for="micDevice">Microphone</label>
+      <select id="micDevice" aria-label="Microphone input">
+        <option value="">System default</option>
+      </select>
+    </div>
+
+    <div class="recording-actions">
+      <span id="sessionTimer" class="timer" aria-label="Session duration">00:00</span>
+      <button id="startSession" class="button button-primary" type="button">
+        <span class="record-icon" aria-hidden="true"></span> Start listening
+      </button>
+      <button id="pauseSession" class="button button-secondary" type="button" hidden>Pause</button>
+      <button id="stopSession" class="button button-danger" type="button" hidden>Stop &amp; analyze</button>
+    </div>
+  </section>
+
+  <main id="workspace" class="workspace">
+    <section class="pane transcript-pane" aria-labelledby="transcriptHeading">
+      <header class="pane-header">
+        <div>
+          <span class="eyebrow">Conversation</span>
+          <h1 id="transcriptHeading">Live transcript</h1>
+        </div>
+        <span id="utteranceCount" class="count-badge">0 captured</span>
+      </header>
+
+      <div id="transcript" class="transcript" aria-live="polite" aria-relevant="additions text">
+        <div id="transcriptEmpty" class="empty-state">
+          <span class="empty-icon" aria-hidden="true">“</span>
+          <h2>The conversation will appear here</h2>
+          <p>Start listening, then speak naturally. ReqPilot turns the discussion into structured requirements as you go.</p>
+        </div>
+      </div>
+
+      <footer class="pane-footer">
+        <span><i class="legend-dot final-dot"></i> Final</span>
+        <span><i class="legend-dot partial-dot"></i> Listening</span>
+        <button id="scrollTranscript" class="text-button" type="button">Jump to latest</button>
+      </footer>
+    </section>
+
+    <section class="pane canvas-pane" aria-labelledby="canvasHeading">
+      <header class="pane-header canvas-header">
+        <div>
+          <span class="eyebrow">Living document</span>
+          <h1 id="canvasHeading">Requirements canvas</h1>
+        </div>
+        <span id="stateRevision" class="revision-badge">Waiting for analysis</span>
+      </header>
+
+      <div id="canvas" class="canvas-content" aria-live="polite">
+        <section class="canvas-section summary-section" aria-labelledby="summaryHeading">
+          <div class="section-heading">
+            <h2 id="summaryHeading">What we understand</h2>
+            <span id="summaryCount" class="section-count">0</span>
+          </div>
+          <div id="summaryList" class="summary-list placeholder-stack">
+            <p class="section-empty">The meeting summary will take shape after the first few points are discussed.</p>
+          </div>
+        </section>
+
+        <section class="canvas-section" aria-labelledby="requirementsHeading">
+          <div class="section-heading">
+            <h2 id="requirementsHeading">Requirements</h2>
+            <span id="requirementsCount" class="section-count">0</span>
+          </div>
+          <div id="requirementsList" class="card-list">
+            <p class="section-empty">Captured needs, constraints, and acceptance details will appear here.</p>
+          </div>
+        </section>
+
+        <section class="canvas-section" aria-labelledby="decisionsHeading">
+          <div class="section-heading">
+            <h2 id="decisionsHeading">Decisions</h2>
+            <span id="decisionsCount" class="section-count">0</span>
+          </div>
+          <div id="decisionsList" class="card-list compact-cards">
+            <p class="section-empty">Confirmed choices will be separated from assumptions.</p>
+          </div>
+        </section>
+
+        <section class="canvas-section" aria-labelledby="visualsHeading">
+          <div class="section-heading">
+            <h2 id="visualsHeading">Processes &amp; metrics</h2>
+            <span id="visualsCount" class="section-count">0</span>
+          </div>
+          <div id="visualsList" class="visuals-grid">
+            <p class="section-empty">Flows and metrics are generated when the discussion supports them.</p>
+          </div>
+        </section>
+      </div>
+    </section>
+
+    <aside class="pane copilot-pane" aria-labelledby="copilotHeading">
+      <header class="pane-header copilot-header">
+        <div>
+          <span class="eyebrow">Coverage coach</span>
+          <h1 id="copilotHeading">Copilot</h1>
+        </div>
+        <span id="questionCount" class="count-badge accent">0 open</span>
+      </header>
+
+      <div class="coverage-card" aria-labelledby="coverageHeading">
+        <div class="coverage-copy">
+          <h2 id="coverageHeading">Discovery coverage</h2>
+          <strong id="coveragePercent">0%</strong>
+        </div>
+        <div class="progress-track" role="progressbar" aria-label="Discovery coverage" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+          <span id="coverageBar"></span>
+        </div>
+        <p id="coverageHint">Questions and confirmed requirements improve coverage.</p>
+      </div>
+
+      <nav class="question-tabs" aria-label="Question status">
+        <button class="question-tab active" type="button" data-question-filter="suggested" aria-pressed="true">Suggested</button>
+        <button class="question-tab" type="button" data-question-filter="asked" aria-pressed="false">Asked</button>
+        <button class="question-tab" type="button" data-question-filter="parked" aria-pressed="false">Parked</button>
+      </nav>
+
+      <div id="questionList" class="question-list">
+        <div class="empty-state small">
+          <span class="empty-icon sparkle" aria-hidden="true">✦</span>
+          <h2>Prompts will surface here</h2>
+          <p>ReqPilot looks for missing actors, edge cases, data rules, volumes, and non-functional needs.</p>
+        </div>
+      </div>
+
+      <section class="gaps-section" aria-labelledby="gapsHeading">
+        <div class="section-heading">
+          <h2 id="gapsHeading">Watch list</h2>
+          <span id="gapsCount" class="section-count">0</span>
+        </div>
+        <div id="gapsList" class="gaps-list">
+          <p class="section-empty">No gaps detected yet.</p>
+        </div>
+      </section>
+    </aside>
+  </main>
+
+  <dialog id="sessionsDialog" class="sessions-dialog" aria-labelledby="sessionsHeading">
+    <form method="dialog" class="dialog-shell">
+      <header>
+        <div>
+          <span class="eyebrow">Local workspace</span>
+          <h2 id="sessionsHeading">Reopen a session</h2>
+        </div>
+        <button class="icon-button" value="cancel" aria-label="Close sessions">×</button>
+      </header>
+      <div id="sessionsList" class="sessions-list">
+        <p class="section-empty">Loading saved sessions…</p>
+      </div>
+      <footer>
+        <p>Session artifacts are stored locally by ReqPilot.</p>
+        <button id="newSession" class="button button-primary" value="cancel" type="button">New session</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <dialog id="editDialog" class="edit-dialog" aria-labelledby="editHeading">
+    <form id="editForm" method="dialog" class="dialog-shell">
+      <header>
+        <h2 id="editHeading">Edit item</h2>
+        <button class="icon-button" value="cancel" aria-label="Cancel edit">×</button>
+      </header>
+      <label for="editText">Text</label>
+      <textarea id="editText" rows="5" required></textarea>
+      <footer>
+        <button class="button button-quiet" value="cancel">Cancel</button>
+        <button id="saveEdit" class="button button-primary" value="default">Save change</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <div id="toastRegion" class="toast-region" role="status" aria-live="polite"></div>
+
+  <script src="./vendor/mermaid.min.js"></script>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
