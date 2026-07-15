@@ -1,0 +1,10 @@
+.env
+__pycache__/
+*.pyc
+.pytest_cache/
+data/
+models/
+debug_audio/
+node_modules/
+*.wav
+!tests/fixtures/*.wav
