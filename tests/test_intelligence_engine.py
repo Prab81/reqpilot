@@ -90,7 +90,8 @@ def test_invalid_mermaid_is_converted_to_gap(tmp_path) -> None:
     response = empty_state()
     response["diagrams"] = [{
         "id": "G1", "kind": "flowchart", "title": "Bad",
-        "mermaid": "flowchart TD\nA[unquoted] --> B[\"B\"]", "evidence_utterances": [1],
+        "mermaid": "flowchart TD\nA[\"A\"] --> B[\"B\"]\nclick A evil",
+        "evidence_utterances": [1],
     }]
 
     state = IntelligenceEngine(MockProvider([response]), store).analyze(session_id)

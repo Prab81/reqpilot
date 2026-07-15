@@ -54,6 +54,52 @@ export function calculateCoverage(state) {
   return Math.max(0, Math.min(100, Math.round(requirementsScore + questionScore)));
 }
 
+/** Accept the slightly different transcript payload shapes used by saved/imported sessions. */
+export function normalizeTranscript(value) {
+  const source = Array.isArray(value) ? value : (value?.utterances || value?.transcript || []);
+  return Array.isArray(source) ? source.filter((item) => item && typeof item === 'object').map((item, index) => ({
+    utterance_id: item.utterance_id ?? item.id ?? index + 1,
+    text: String(item.text || item.content || ''),
+    speaker: String(item.speaker || item.speaker_label || ''),
+    t0: Number(item.t0 ?? item.start ?? item.start_time ?? 0) || 0,
+    t1: Number(item.t1 ?? item.end ?? item.end_time ?? 0) || 0,
+  })).filter((item) => item.text.trim()) : [];
+}
+
+/** Normalize both {epics:[...]} and flat story responses into one UI contract. */
+export function normalizeStories(value) {
+  const envelope = value && typeof value === 'object' ? value : {};
+  const source = envelope.package && typeof envelope.package === 'object' ? envelope.package : envelope;
+  const flatStories = Array.isArray(source.stories) ? source.stories : (Array.isArray(value) ? value : []);
+  let epics = Array.isArray(source.epics) ? source.epics.map((epic) => ({
+    ...epic,
+    stories: Array.isArray(epic?.stories) ? epic.stories : flatStories.filter((story) => story?.epic_id === (epic?.id || epic?.key)),
+  })) : [];
+  if (!epics.length && flatStories.length) {
+    const stories = flatStories;
+    epics = [{ id: 'E1', title: 'Unassigned stories', description: '', stories }];
+  }
+  return epics.filter(Boolean).map((epic, index) => ({
+    id: String(epic.id || epic.key || `E${index + 1}`),
+    title: String(epic.title || epic.summary || `Epic ${index + 1}`),
+    description: String(epic.description || ''),
+    stories: (Array.isArray(epic.stories) ? epic.stories : []).filter(Boolean).map((story, storyIndex) => ({
+      ...story,
+      id: String(story.id || story.key || `S${storyIndex + 1}`),
+      title: String(story.title || story.summary || `Story ${storyIndex + 1}`),
+      text: String(story.text || story.user_story || story.description || (
+        story.as_a && story.i_want && story.so_that ? `As a ${story.as_a}, I want ${story.i_want}, so that ${story.so_that}.` : ''
+      )),
+      acceptance_criteria: Array.isArray(story.acceptance_criteria) ? story.acceptance_criteria.map((criterion) => {
+        if (typeof criterion === 'string') return criterion;
+        if (criterion && typeof criterion === 'object') return `Given ${criterion.given || ''}, when ${criterion.when || ''}, then ${criterion.then || ''}.`;
+        return '';
+      }).filter(Boolean) : [],
+      evidence_utterances: Array.isArray(story.evidence_utterances) ? story.evidence_utterances : [],
+    })),
+  }));
+}
+
 const hasDOM = typeof window !== 'undefined' && typeof document !== 'undefined';
 
 if (hasDOM) {
@@ -73,6 +119,18 @@ if (hasDOM) {
     progressTrack: document.querySelector('.progress-track'), sessionsDialog: $('sessionsDialog'),
     sessionsList: $('sessionsList'), editDialog: $('editDialog'), editForm: $('editForm'),
     editText: $('editText'), toastRegion: $('toastRegion'),
+    entryView: $('entryView'), sessionShell: $('sessionShell'), controlStrip: $('controlStrip'),
+    importDialog: $('importDialog'), importForm: $('importForm'), importText: $('importText'),
+    importTitle: $('importTitle'), transcriptFile: $('transcriptFile'), fileChoice: $('fileChoice'),
+    importProgress: $('importProgress'), submitImport: $('submitImport'),
+    settingsDialog: $('settingsDialog'), configStatus: $('configStatus'), providerBadge: $('providerBadge'),
+    privacyTitle: $('privacyTitle'), privacyCopy: $('privacyCopy'), sessionModeBadge: $('sessionModeBadge'),
+    liveView: $('liveView'), brdView: $('brdView'), storiesView: $('storiesView'), jiraView: $('jiraView'),
+    brdPreview: $('brdPreview'), brdStatus: $('brdStatus'), brdMeta: $('brdMeta'),
+    exportBrdDocx: $('exportBrdDocx'), storiesList: $('storiesList'), storySummary: $('storySummary'),
+    storyNavCount: $('storyNavCount'), mergeStories: $('mergeStories'), jiraReadiness: $('jiraReadiness'),
+    jiraProject: $('jiraProject'), jiraScope: $('jiraScope'), jiraPreview: $('jiraPreview'),
+    jiraPreviewCount: $('jiraPreviewCount'), confirmJira: $('confirmJira'), exportJira: $('exportJira'),
   };
 
   const app = {
@@ -91,6 +149,14 @@ if (hasDOM) {
     pinned: new Set(),
     pendingEdit: null,
     renderToken: 0,
+    mode: null,
+    view: 'live',
+    brd: '',
+    epics: [],
+    selectedStories: new Set(),
+    config: null,
+    jiraPlan: null,
+    unavailable: new Set(),
   };
 
   if (window.mermaid) {
@@ -144,12 +210,12 @@ if (hasDOM) {
     dom.stop.hidden = !active || phase === 'connecting';
     dom.pause.textContent = phase === 'paused' ? 'Resume' : 'Pause';
     dom.micDevice.disabled = active;
-    dom.exportBrd.disabled = !app.sessionId;
+    dom.exportBrd.disabled = !app.sessionId || app.unavailable.has('brd');
   }
 
   async function api(path, options = {}) {
     const headers = { Accept: 'application/json', ...(options.headers || {}) };
-    if (options.body && !headers['Content-Type']) headers['Content-Type'] = 'application/json';
+    if (options.body && !(options.body instanceof FormData) && !headers['Content-Type']) headers['Content-Type'] = 'application/json';
     const response = await fetch(path, { ...options, headers });
     if (!response.ok) {
       let detail = `${response.status} ${response.statusText}`;
@@ -160,12 +226,384 @@ if (hasDOM) {
     return response.json();
   }
 
+  function unavailable(error) {
+    return /(?:404|405|501)\b/.test(String(error?.message || ''));
+  }
+
+  function showSessionShell(mode = app.mode || 'saved') {
+    app.mode = mode;
+    dom.entryView.hidden = true;
+    dom.sessionShell.hidden = false;
+    dom.sessionShell.dataset.mode = mode;
+    dom.controlStrip.hidden = mode !== 'live';
+    dom.sessionModeBadge.textContent = mode === 'import' ? 'Imported transcript' : mode === 'live' ? 'Live capture' : 'Saved session';
+    switchView('live');
+  }
+
+  function showEntry() {
+    if (app.phase === 'recording' || app.phase === 'paused') {
+      showError('Stop or pause the live session before returning home.');
+      return;
+    }
+    dom.sessionShell.hidden = true;
+    dom.entryView.hidden = false;
+    dom.sessionTitle.textContent = app.sessionId ? (app.state.title || 'Untitled discovery') : 'No session open';
+  }
+
+  function switchView(name) {
+    app.view = name;
+    const views = { live: dom.liveView, brd: dom.brdView, stories: dom.storiesView, jira: dom.jiraView };
+    Object.entries(views).forEach(([key, node]) => {
+      node.hidden = key !== name;
+      node.classList.toggle('active-view', key === name);
+    });
+    document.querySelectorAll('[data-view]').forEach((button) => {
+      const active = button.dataset.view === name;
+      button.classList.toggle('active', active);
+      if (active) button.setAttribute('aria-current', 'page'); else button.removeAttribute('aria-current');
+    });
+    dom.controlStrip.hidden = name !== 'live' || app.mode !== 'live';
+    if (name === 'brd' && app.sessionId && !app.brd) loadBrd(false);
+    if (name === 'stories' && app.sessionId && !app.epics.length) loadStories();
+    if (name === 'jira') renderJiraReadiness();
+  }
+
   async function ensureSession() {
     if (app.sessionId) return app.sessionId;
     const created = await api('/api/session', { method: 'POST' });
     app.sessionId = created.id || created.session_id;
     if (!app.sessionId) throw new Error('The server did not return a session id.');
     return app.sessionId;
+  }
+
+  async function importTranscript(event) {
+    event.preventDefault();
+    hideError();
+    const file = dom.transcriptFile.files?.[0];
+    const textValue = dom.importText.value.trim();
+    if (!file && !textValue) {
+      showError('Choose a TXT, VTT, or DOCX file, or paste transcript text.');
+      dom.importText.focus();
+      return;
+    }
+    const allowed = ['txt', 'vtt', 'docx'];
+    if (file && !allowed.includes((file.name.split('.').pop() || '').toLowerCase())) {
+      showError('That file type is not supported. Choose TXT, VTT, or DOCX.');
+      return;
+    }
+    const form = new FormData();
+    if (file) form.append('file', file);
+    else if (textValue) form.append('text', textValue);
+    form.append('filename', file?.name || 'pasted-transcript.txt');
+    if (dom.importTitle.value.trim()) form.append('title', dom.importTitle.value.trim());
+    dom.submitImport.disabled = true;
+    dom.importProgress.hidden = false;
+    const bar = dom.importProgress.querySelector('.progress-track span');
+    const meter = dom.importProgress.querySelector('[role="progressbar"]');
+    bar.style.width = '28%'; meter.setAttribute('aria-valuenow', '28');
+    try {
+      const result = await api('/api/session/import', { method: 'POST', body: form });
+      bar.style.width = '82%'; meter.setAttribute('aria-valuenow', '82');
+      app.sessionId = result.id || result.session_id || result.session?.id;
+      if (!app.sessionId) throw new Error('The import completed without a session id.');
+      app.state = normalizeState(result.state || result.session?.state);
+      app.revision = Number(result.rev || result.session?.rev) || 0;
+      app.brd = String(result.markdown || result.brd?.markdown || '');
+      app.epics = normalizeStories(result.stories || result);
+      await Promise.allSettled([loadTranscript(), app.state.requirements.length ? Promise.resolve() : loadState()]);
+      bar.style.width = '100%'; meter.setAttribute('aria-valuenow', '100');
+      renderState(); renderBrd(); renderStories();
+      dom.importDialog.close();
+      showSessionShell('import');
+      setPhase('complete', 'Transcript analyzed', 'The canvas, BRD, and delivery workspace are ready to review.');
+      toast('Transcript imported');
+    } catch (error) {
+      if (unavailable(error)) app.unavailable.add('import');
+      showError(`Could not import the transcript: ${error.message}`);
+    } finally {
+      dom.submitImport.disabled = false;
+      window.setTimeout(() => { dom.importProgress.hidden = true; bar.style.width = '0'; }, 400);
+    }
+  }
+
+  async function loadState() {
+    if (!app.sessionId) return;
+    const result = await api(`/api/session/${encodeURIComponent(app.sessionId)}/state`);
+    app.state = normalizeState(result.state || result);
+    app.revision = Number(result.rev) || app.revision;
+    renderState();
+  }
+
+  async function loadTranscript() {
+    if (!app.sessionId) return;
+    try {
+      const result = await api(`/api/session/${encodeURIComponent(app.sessionId)}/transcript`);
+      const utterances = normalizeTranscript(result);
+      resetTranscript('No transcript content was saved for this session.');
+      utterances.forEach(renderFinal);
+    } catch (error) {
+      if (unavailable(error)) {
+        app.unavailable.add('transcript');
+        resetTranscript('Transcript restore is unavailable in this server version. The structured canvas is still ready.');
+      } else throw error;
+    }
+  }
+
+  function markdownToFragment(markdown) {
+    const fragment = document.createDocumentFragment();
+    let list = null;
+    String(markdown || '').split(/\r?\n/).forEach((raw) => {
+      const line = raw.trimEnd();
+      const heading = /^(#{1,4})\s+(.+)$/.exec(line);
+      const bullet = /^[-*]\s+(.+)$/.exec(line);
+      if (heading) {
+        list = null;
+        fragment.append(element(`h${Math.min(4, heading[1].length + 1)}`, '', heading[2]));
+      } else if (bullet) {
+        if (!list) { list = element('ul'); fragment.append(list); }
+        list.append(element('li', '', bullet[1]));
+      } else if (/^```/.test(line)) {
+        list = null;
+      } else if (line.trim()) {
+        list = null;
+        fragment.append(element('p', '', line.replace(/\*\*/g, '')));
+      } else list = null;
+    });
+    return fragment;
+  }
+
+  function renderBrd() {
+    clear(dom.brdPreview);
+    if (!app.brd) {
+      const empty = element('div', 'artifact-empty');
+      empty.append(element('span', '', '▤'), element('h2', '', 'Your BRD will appear here'), element('p', '', 'Generate the document when the transcript has been analyzed.'));
+      dom.brdPreview.append(empty);
+      dom.brdStatus.textContent = 'Not generated';
+      dom.brdMeta.textContent = 'Generate a BRD when the transcript has been analyzed.';
+      return;
+    }
+    dom.brdPreview.append(markdownToFragment(app.brd));
+    dom.brdStatus.textContent = 'Ready to review';
+    dom.brdMeta.textContent = `${app.brd.split(/\r?\n/).filter(Boolean).length} document lines · analysis rev ${app.revision}`;
+    $('brdNavState').textContent = 'Ready';
+  }
+
+  async function loadBrd(regenerate = false) {
+    if (!app.sessionId || app.unavailable.has('brd')) return;
+    $('refreshBrd').disabled = true;
+    dom.brdStatus.textContent = regenerate ? 'Regenerating…' : 'Loading…';
+    try {
+      const result = await api(`/api/session/${encodeURIComponent(app.sessionId)}/brd`, { method: 'POST' });
+      app.brd = String(result.markdown || result.brd || '');
+      renderBrd();
+      dom.exportBrdDocx.href = `/api/session/${encodeURIComponent(app.sessionId)}/brd.docx`;
+    } catch (error) {
+      if (unavailable(error)) {
+        app.unavailable.add('brd');
+        dom.brdStatus.textContent = 'Unavailable';
+        dom.brdMeta.textContent = 'BRD generation is not available in this server version.';
+        dom.exportBrd.disabled = true; dom.exportBrdDocx.hidden = true;
+      } else showError(`Could not generate the BRD: ${error.message}`);
+    } finally { $('refreshBrd').disabled = false; }
+  }
+
+  function flattenStories() {
+    return app.epics.flatMap((epic) => epic.stories.map((story) => ({ epic, story })));
+  }
+
+  async function loadStories() {
+    if (!app.sessionId || app.unavailable.has('stories')) return;
+    try {
+      const result = await api(`/api/session/${encodeURIComponent(app.sessionId)}/stories`);
+      app.epics = normalizeStories(result);
+      renderStories();
+    } catch (error) {
+      if (unavailable(error)) {
+        app.unavailable.add('stories');
+        $('generateStories').disabled = true;
+        clear(dom.storiesList); dom.storiesList.append(element('p', 'unavailable-note', 'Story generation is unavailable in this server version.'));
+      } else showError(`Could not load stories: ${error.message}`);
+    }
+  }
+
+  async function generateStories() {
+    if (!app.sessionId) return;
+    const buttons = document.querySelectorAll('#generateStories, [data-generate-stories]');
+    buttons.forEach((button) => { button.disabled = true; });
+    try {
+      const result = await api(`/api/session/${encodeURIComponent(app.sessionId)}/stories/generate`, { method: 'POST' });
+      app.epics = normalizeStories(result);
+      renderStories(); toast('Backlog generated');
+    } catch (error) {
+      if (unavailable(error)) { app.unavailable.add('stories'); buttons.forEach((button) => { button.hidden = true; }); }
+      showError(`Could not generate stories: ${error.message}`);
+    } finally { buttons.forEach((button) => { button.disabled = false; }); }
+  }
+
+  function renderStories() {
+    clear(dom.storiesList);
+    const flat = flattenStories();
+    dom.storySummary.textContent = `${app.epics.length} epic${app.epics.length === 1 ? '' : 's'} · ${flat.length} stor${flat.length === 1 ? 'y' : 'ies'}`;
+    dom.storyNavCount.textContent = String(flat.length);
+    app.epics.forEach((epic) => {
+      const section = element('section', 'epic-group');
+      const header = element('header', 'epic-header');
+      const copy = element('div'); copy.append(element('span', 'item-id', epic.id), element('h2', '', epic.title));
+      header.append(copy, element('span', 'count-badge', `${epic.stories.length} stories`));
+      section.append(header);
+      if (epic.description) section.append(element('p', 'epic-description', epic.description));
+      epic.stories.forEach((story) => section.append(renderStory(epic, story)));
+      dom.storiesList.append(section);
+    });
+    if (!flat.length) {
+      const empty = element('div', 'artifact-empty');
+      empty.append(element('span', '', '◇'), element('h2', '', 'Turn requirements into a ready backlog'), element('p', '', 'Stories include acceptance criteria and transcript evidence.'));
+      const generate = element('button', 'button button-primary', 'Generate epics & stories'); generate.type = 'button'; generate.addEventListener('click', generateStories); empty.append(generate);
+      dom.storiesList.append(empty);
+    }
+    updateStorySelection();
+  }
+
+  function renderStory(epic, story) {
+    const card = element('article', 'story-card'); card.dataset.storyId = story.id;
+    const select = element('input'); select.type = 'checkbox'; select.checked = app.selectedStories.has(story.id); select.setAttribute('aria-label', `Select ${story.id}`);
+    select.addEventListener('change', () => { if (select.checked) app.selectedStories.add(story.id); else app.selectedStories.delete(story.id); updateStorySelection(); });
+    const body = element('div', 'story-body');
+    const head = element('header'); head.append(element('span', 'story-key', story.id), element('h3', '', story.title));
+    const actions = element('div', 'story-actions');
+    const edit = element('button', 'icon-button', '✎'); edit.type = 'button'; edit.setAttribute('aria-label', `Edit ${story.id}`); edit.addEventListener('click', () => openStoryEdit(epic, story));
+    const remove = element('button', 'icon-button', '×'); remove.type = 'button'; remove.setAttribute('aria-label', `Delete ${story.id}`); remove.addEventListener('click', () => storyOverride('delete', [story.id]));
+    actions.append(edit, remove); head.append(actions); body.append(head);
+    body.append(element('p', 'story-text', story.text));
+    if (story.acceptance_criteria.length) {
+      const block = element('div', 'acceptance-block'); block.append(element('strong', '', 'Acceptance criteria'));
+      const list = element('ul'); story.acceptance_criteria.forEach((criterion) => list.append(element('li', '', criterion))); block.append(list); body.append(block);
+    }
+    const refs = evidence(story); if (refs) body.append(refs);
+    card.append(select, body); return card;
+  }
+
+  function updateStorySelection() {
+    const count = app.selectedStories.size;
+    dom.mergeStories.disabled = count < 2;
+    dom.mergeStories.textContent = count >= 2 ? `Merge ${count} selected` : 'Merge selected';
+  }
+
+  function openStoryEdit(epic, story) {
+    app.pendingEdit = { kind: 'story', item: story, epic };
+    dom.editText.value = story.text || story.title || '';
+    dom.editDialog.showModal(); dom.editText.focus();
+  }
+
+  async function storyOverride(action, ids, text) {
+    if (!app.sessionId) return;
+    try {
+      const result = await api(`/api/session/${encodeURIComponent(app.sessionId)}/stories/override`, {
+        method: 'POST', body: JSON.stringify({ action, ids, id: ids[0], ...(text !== undefined ? { text } : {}) }),
+      });
+      app.epics = normalizeStories(result.stories || result);
+      app.selectedStories.clear(); renderStories(); toast('Backlog updated');
+    } catch (error) { showError(`Could not update the backlog: ${error.message}`); }
+  }
+
+  function statusValue(value) {
+    if (typeof value === 'boolean') return value;
+    if (value && typeof value === 'object') return Boolean(value.configured ?? value.ready ?? value.available);
+    return ['ready', 'configured', 'available', 'connected', 'local'].includes(String(value || '').toLowerCase());
+  }
+
+  async function loadConfig() {
+    try {
+      app.config = await api('/api/config/status');
+      renderConfig(); renderJiraReadiness();
+      const provider = app.config.provider?.name || app.config.provider || 'Configured provider';
+      const local = statusValue(app.config.local_only ?? app.config.local ?? app.config.offline);
+      dom.providerBadge.textContent = `${local ? 'Local' : 'Provider'} · ${provider}`;
+      dom.providerBadge.classList.add('ready');
+      dom.privacyTitle.textContent = local ? 'Local-only mode is active' : 'Local-first capture';
+      dom.privacyCopy.textContent = local ? 'Transcripts and analysis stay on this machine.' : 'Audio stays local; configured analysis requests may use a cloud provider.';
+    } catch (error) {
+      app.unavailable.add('config');
+      dom.providerBadge.textContent = 'Status unavailable';
+      renderConfig();
+    }
+  }
+
+  function sanitizedConfigRows(config) {
+    const provider = config?.provider?.name || config?.provider || 'Not reported';
+    return [
+      ['Analysis provider', String(provider), statusValue(config?.provider?.configured ?? config?.provider_ready ?? true)],
+      ['Local-only mode', statusValue(config?.local_only ?? config?.local ?? config?.offline) ? 'Enabled' : 'Not enabled', true],
+      ['Speech engine', String(config?.asr?.status || config?.asr || config?.speech || 'Not reported'), statusValue(config?.asr?.ready ?? config?.asr_ready ?? config?.asr)],
+      ['Jira connection', statusValue(config?.jira?.configured ?? config?.jira_configured) ? 'Configured' : 'Not configured', statusValue(config?.jira?.configured ?? config?.jira_configured)],
+    ];
+  }
+
+  function renderConfig() {
+    clear(dom.configStatus);
+    if (!app.config) {
+      dom.configStatus.append(element('p', 'unavailable-note', 'Runtime status is unavailable. ReqPilot will keep unsupported actions disabled.'));
+      return;
+    }
+    sanitizedConfigRows(app.config).forEach(([label, value, ready]) => {
+      const row = element('div', 'config-row');
+      row.append(element('span', `config-indicator ${ready ? 'ready' : 'pending'}`, ready ? '✓' : '!'));
+      const copy = element('div'); copy.append(element('strong', '', label), element('span', '', value)); row.append(copy); dom.configStatus.append(row);
+    });
+  }
+
+  function renderJiraReadiness() {
+    clear(dom.jiraReadiness);
+    const storyCount = flattenStories().length;
+    const jiraReady = statusValue(app.config?.jira?.configured ?? app.config?.jira_configured);
+    const checks = [
+      [jiraReady, 'Jira connection configured', 'Add Jira configuration on the server'],
+      [storyCount > 0, `${storyCount} backlog item${storyCount === 1 ? '' : 's'} ready`, 'Generate stories first'],
+      [Boolean(dom.jiraProject.value.trim()), 'Destination project entered', 'Enter a destination project key'],
+    ];
+    checks.forEach(([ready, yes, no]) => {
+      const row = element('p', `check-row ${ready ? 'ready' : 'pending'}`);
+      row.append(element('span', '', ready ? '✓' : '•'), document.createTextNode(ready ? yes : no)); dom.jiraReadiness.append(row);
+    });
+    $('previewJira').disabled = !storyCount || !dom.jiraProject.value.trim() || app.unavailable.has('jira');
+  }
+
+  async function previewJira() {
+    if (!app.sessionId) return;
+    const project_key = dom.jiraProject.value.trim().toUpperCase();
+    try {
+      const result = await api(`/api/session/${encodeURIComponent(app.sessionId)}/jira/preview`, {
+        method: 'POST', body: JSON.stringify({ project_key, scope: dom.jiraScope.value, story_ids: [...app.selectedStories] }),
+      });
+      app.jiraPlan = result;
+      const issues = Array.isArray(result.issues) ? result.issues : Array.isArray(result.preview) ? result.preview : [];
+      clear(dom.jiraPreview);
+      issues.forEach((issue, index) => {
+        const row = element('article', 'jira-issue');
+        row.append(element('span', 'issue-type', String(issue.issue_type || issue.type || 'Story')), element('strong', '', issue.summary || issue.title || `Issue ${index + 1}`));
+        if (issue.parent || issue.epic) row.append(element('small', '', `Linked to ${issue.parent || issue.epic}`));
+        dom.jiraPreview.append(row);
+      });
+      emptyIf(dom.jiraPreview, issues.length, 'The server returned an empty export plan.');
+      dom.jiraPreviewCount.textContent = String(issues.length);
+      dom.confirmJira.checked = false; dom.exportJira.disabled = true;
+    } catch (error) {
+      if (unavailable(error)) { app.unavailable.add('jira'); $('previewJira').disabled = true; }
+      showError(`Could not build the Jira preview: ${error.message}`);
+    }
+  }
+
+  async function exportJira() {
+    if (!app.sessionId || !app.jiraPlan || !dom.confirmJira.checked) return;
+    dom.exportJira.disabled = true;
+    try {
+      const result = await api(`/api/session/${encodeURIComponent(app.sessionId)}/jira/export`, {
+        method: 'POST', body: JSON.stringify({ project_key: dom.jiraProject.value.trim().toUpperCase(), preview: app.jiraPlan }),
+      });
+      toast(`${Number(result.created_count ?? result.created?.length ?? 0)} Jira issues created`);
+      dom.confirmJira.checked = false;
+    } catch (error) { showError(`Jira export failed: ${error.message}`); }
+    finally { dom.exportJira.disabled = !dom.confirmJira.checked; }
   }
 
   function openSocket(sessionId) {
@@ -314,7 +752,7 @@ if (hasDOM) {
     const marker = element('span', 'utterance-marker'); marker.setAttribute('aria-hidden', 'true');
     const body = element('div', 'utterance-body');
     const meta = element('div', 'utterance-meta');
-    meta.append(element('span', '', partial ? 'Listening…' : `Utterance ${message.utterance_id ?? ''}`));
+    meta.append(element('span', '', partial ? 'Listening…' : (message.speaker || `Utterance ${message.utterance_id ?? ''}`)));
     meta.append(element('time', '', formatTime(message.t0 ?? app.elapsedBeforePause / 1000)));
     body.append(meta, element('p', 'utterance-text', message.text || ''));
     row.append(marker, body);
@@ -627,15 +1065,17 @@ if (hasDOM) {
     if (!text || !app.pendingEdit) return;
     const { kind, item } = app.pendingEdit;
     dom.editDialog.close(); app.pendingEdit = null;
-    await applyOverride(kind, item, 'edit', text);
+    if (kind === 'story') await storyOverride('edit', [item.id], text);
+    else await applyOverride(kind, item, 'edit', text);
   }
 
   async function exportBrd() {
     if (!app.sessionId) return;
     dom.exportBrd.disabled = true;
     try {
-      const result = await api(`/api/session/${encodeURIComponent(app.sessionId)}/brd`, { method: 'POST' });
-      const markdown = result.markdown || '';
+      if (!app.brd) await loadBrd(true);
+      const markdown = app.brd;
+      if (!markdown) throw new Error('No BRD content is available yet.');
       const blob = new Blob([markdown], { type: 'text/markdown;charset=utf-8' });
       const url = URL.createObjectURL(blob); const link = document.createElement('a');
       link.href = url; link.download = `${safeFilename(app.state.title)}-BRD.md`; link.click();
@@ -672,28 +1112,30 @@ if (hasDOM) {
     if (app.socket?.readyState <= WebSocket.OPEN) app.socket.close(1000, 'reopen');
     stopTimer(); resetTranscript();
     try {
+      app.sessionId = sessionId; app.brd = ''; app.epics = []; app.selectedStories.clear();
       const result = await api(`/api/session/${encodeURIComponent(sessionId)}/state`);
-      app.sessionId = sessionId; app.state = normalizeState(result.state || result);
-      app.revision = Number(result.rev) || 0; renderState();
-      dom.sessionsDialog.close(); setPhase('complete', 'Saved session reopened', 'Review the canvas or export a fresh BRD.');
+      app.state = normalizeState(result.state || result); app.revision = Number(result.rev) || 0;
+      await Promise.allSettled([loadTranscript(), loadStories(), loadBrd(false)]);
+      renderState(); renderStories(); renderBrd(); showSessionShell('saved');
+      dom.sessionsDialog.close(); setPhase('complete', 'Saved session reopened', 'Transcript, canvas, document, and backlog are restored.');
       toast('Session reopened');
     } catch (error) { showError(`Could not reopen the session: ${error.message}`); }
   }
 
-  function resetTranscript() {
+  function resetTranscript(message = 'The structured output is ready to review. Start a new session to capture another conversation.') {
     app.utterances.clear(); app.partialNode = null; clear(dom.transcript);
     const empty = element('div', 'empty-state'); empty.id = 'transcriptEmpty';
     empty.append(element('span', 'empty-icon', '“'), element('h2', '', 'Saved canvas loaded'),
-      element('p', '', 'The structured output is ready to review. Start a new session to capture another conversation.'));
+      element('p', '', message));
     dom.transcript.append(empty); dom.transcriptEmpty = empty; dom.utteranceCount.textContent = '0 captured';
   }
 
   async function newSession() {
     await app.capture.stop();
     if (app.socket?.readyState <= WebSocket.OPEN) app.socket.close(1000, 'new session');
-    stopTimer(); app.sessionId = null; app.state = { ...EMPTY_STATE }; app.revision = 0;
-    app.pinned.clear(); resetTranscript(); renderState(); dom.sessionTimer.textContent = '00:00';
-    dom.sessionsDialog.close(); setPhase('idle', 'Ready for a new session', 'Your audio and notes stay on this machine.');
+    stopTimer(); app.sessionId = null; app.state = { ...EMPTY_STATE }; app.revision = 0; app.brd = ''; app.epics = [];
+    app.pinned.clear(); app.selectedStories.clear(); resetTranscript(); renderState(); renderStories(); renderBrd(); dom.sessionTimer.textContent = '00:00';
+    dom.sessionsDialog.close(); setPhase('idle', 'Ready for a new session', 'Your audio and notes stay on this machine.'); showEntry();
   }
 
   dom.start.addEventListener('click', startSession);
@@ -705,6 +1147,29 @@ if (hasDOM) {
   $('newSession').addEventListener('click', newSession);
   $('scrollTranscript').addEventListener('click', () => { dom.transcript.scrollTop = dom.transcript.scrollHeight; });
   dom.editForm.addEventListener('submit', saveEdit);
+  $('goHome').addEventListener('click', showEntry);
+  $('chooseLive').addEventListener('click', () => showSessionShell('live'));
+  $('chooseImport').addEventListener('click', () => dom.importDialog.showModal());
+  document.querySelectorAll('[data-close-dialog]').forEach((button) => button.addEventListener('click', () => button.closest('dialog').close()));
+  dom.importForm.addEventListener('submit', importTranscript);
+  dom.transcriptFile.addEventListener('change', () => { dom.fileChoice.textContent = dom.transcriptFile.files?.[0]?.name || 'No file selected'; });
+  $('dropZone').addEventListener('dragover', (event) => { event.preventDefault(); $('dropZone').classList.add('is-dragging'); });
+  $('dropZone').addEventListener('dragleave', () => $('dropZone').classList.remove('is-dragging'));
+  $('dropZone').addEventListener('drop', (event) => {
+    event.preventDefault(); $('dropZone').classList.remove('is-dragging');
+    if (event.dataTransfer.files?.length) { dom.transcriptFile.files = event.dataTransfer.files; dom.fileChoice.textContent = event.dataTransfer.files[0].name; }
+  });
+  document.querySelectorAll('[data-view]').forEach((button) => button.addEventListener('click', () => switchView(button.dataset.view)));
+  $('refreshBrd').addEventListener('click', () => loadBrd(true));
+  $('generateStories').addEventListener('click', generateStories);
+  document.querySelectorAll('[data-generate-stories]').forEach((button) => button.addEventListener('click', generateStories));
+  $('selectAllStories').addEventListener('click', () => { flattenStories().forEach(({ story }) => app.selectedStories.add(story.id)); renderStories(); });
+  dom.mergeStories.addEventListener('click', () => storyOverride('merge', [...app.selectedStories]));
+  $('openSettings').addEventListener('click', () => { renderConfig(); dom.settingsDialog.showModal(); });
+  dom.jiraProject.addEventListener('input', renderJiraReadiness);
+  $('previewJira').addEventListener('click', previewJira);
+  dom.confirmJira.addEventListener('change', () => { dom.exportJira.disabled = !dom.confirmJira.checked || !app.jiraPlan; });
+  dom.exportJira.addEventListener('click', exportJira);
   document.querySelectorAll('[data-question-filter]').forEach((button) => {
     button.addEventListener('click', () => {
       app.questionFilter = button.dataset.questionFilter;
@@ -716,4 +1181,5 @@ if (hasDOM) {
   });
   navigator.mediaDevices?.addEventListener?.('devicechange', refreshDevices);
   refreshDevices();
+  loadConfig();
 }

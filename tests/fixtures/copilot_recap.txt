@@ -1,0 +1,8 @@
+[00:00:05] Priya Shah: We need one queue for all applications.
+
+Daniel Wu 00:00:12
+The queue must be sorted by application age.
+
+Priya Shah
+00:00:19
+Only senior underwriters may reassign an application.

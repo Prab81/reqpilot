@@ -86,9 +86,21 @@ def _evidence(value: Any, key: str, item_id: str, problems: list[str]) -> list[i
     return result
 
 
-_NODE = r'[A-Za-z][A-Za-z0-9]*(?:\["[^"\r\n]*"\]|\{"[^"\r\n]*"\})?'
+_NODE = r'[A-Za-z][A-Za-z0-9_]*(?:\["[^"\r\n]*"\]|\{"[^"\r\n]*"\})?'
 _MERMAID_LINE = re.compile(rf"(?:{_NODE})(?:\s*-->\s*(?:\|\"[^\"\r\n]*\"\|\s*)?(?:{_NODE}))?")
 _UNSAFE_MERMAID = re.compile(r"\b(?:subgraph|style|classDef|class|click|linkStyle)\b|%%|;", re.I)
+_FORBIDDEN_MERMAID = re.compile(
+    r"\b(?:subgraph|style|classDef|class|click|linkStyle|href|javascript)\b"
+    r"|%%|<\s*/?\s*[A-Za-z]|`",
+    re.I,
+)
+_PLAIN_EDGE_LABEL = re.compile(r"(?<=-->)\s*\|([^|\"\r\n]+)\|\s*")
+_PLAIN_NODE_LABEL = re.compile(
+    r"\b([A-Za-z][A-Za-z0-9_]*)\s*([\[{(])"
+    r"([A-Za-z0-9 ,.?!&/()'_-]+)([\]})])"
+)
+_QUOTED_ROUND_NODE = re.compile(r'\b([A-Za-z][A-Za-z0-9_]*)\s*\("([^"\r\n]*)"\)')
+_NODE_ONLY = re.compile(_NODE)
 
 
 def valid_mermaid(source: str) -> bool:
@@ -100,6 +112,81 @@ def valid_mermaid(source: str) -> bool:
         not _UNSAFE_MERMAID.search(line) and _MERMAID_LINE.fullmatch(line)
         for line in lines[1:]
     ))
+
+
+def normalize_mermaid(source: str) -> str | None:
+    """Repair harmless provider variations, then enforce the safe subset.
+
+    Local models commonly omit quotes around edge labels (``-->|Yes|``), even
+    when the prompt requests them. Quoting those labels does not broaden the
+    accepted Mermaid language; the normalized result must still pass the same
+    deliberately small allow-list used by :func:`valid_mermaid`.
+    """
+    if not isinstance(source, str) or _FORBIDDEN_MERMAID.search(source):
+        return None
+    normalized = source.replace("\r\n", "\n").replace("\r", "\n").strip()
+    if normalized.startswith("```"):
+        lines = normalized.splitlines()
+        lines = lines[1:] if lines else []
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        normalized = "\n".join(lines).strip()
+    normalized = re.sub(
+        r"\A(?:graph|flowchart)\s+(?:TD|TB|BT|LR|RL)\b",
+        "flowchart TD",
+        normalized,
+        flags=re.I,
+    )
+    # A semicolon is accepted only as a statement separator during repair. Any
+    # forbidden statement keyword was rejected above, and the rebuilt result
+    # must still pass the strict line-by-line allow-list.
+    normalized = "\n".join(part.strip() for part in normalized.split(";") if part.strip())
+    normalized = _QUOTED_ROUND_NODE.sub(
+        lambda match: f'{match.group(1)}["{match.group(2)}"]', normalized)
+    normalized = _PLAIN_NODE_LABEL.sub(
+        lambda match: (
+            f'{match.group(1)}{{"{match.group(3).strip()}"}}'
+            if match.group(2) == "{"
+            else f'{match.group(1)}["{match.group(3).strip()}"]'
+        ),
+        normalized,
+    )
+    normalized = _PLAIN_EDGE_LABEL.sub(
+        lambda match: f' |"{match.group(1).strip()}"| ', normalized)
+    # Expand compact chains (A --> B --> C) into the same strict one-edge-per-
+    # line representation. Every token is checked against the node allow-list
+    # before it is copied into the rebuilt source.
+    lines = [line for line in normalized.splitlines() if line.strip()]
+    if not lines:
+        return None
+    expanded = [lines[0].strip()]
+    for original_line in lines[1:]:
+        line = original_line.strip()
+        parts = [part.strip() for part in line.split("-->")]
+        if len(parts) <= 2:
+            expanded.append(original_line.rstrip())
+            continue
+        left = parts[0]
+        if not _NODE_ONLY.fullmatch(left):
+            return None
+        for part in parts[1:]:
+            match = re.fullmatch(r'(?:\|("[^"\r\n]*")\|\s*)?(.+)', part)
+            if match is None or not _NODE_ONLY.fullmatch(match.group(2).strip()):
+                return None
+            label = f" |{match.group(1)}|" if match.group(1) else ""
+            right = match.group(2).strip()
+            expanded.append(f"{left} -->{label} {right}")
+            left = right
+    # Keep a usable safe diagram when a provider appends one malformed edge to
+    # an otherwise valid flow. Forbidden constructs already rejected the whole
+    # source above; here we retain only lines that independently match the
+    # allow-list. A diagram with no valid edge is still rejected.
+    safe_lines = [
+        line for line in expanded[1:]
+        if _MERMAID_LINE.fullmatch(line.strip())
+    ]
+    normalized = "\n".join([expanded[0], *safe_lines])
+    return normalized if valid_mermaid(normalized) else None
 
 
 def validate_state(state: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
@@ -187,9 +274,12 @@ def validate_state(state: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
                         or not item["labels"]):
                     problems.append(f"metrics/{item_id}: invalid labels/values; item dropped")
                     continue
-            elif key == "diagrams" and not valid_mermaid(item["mermaid"]):
-                problems.append(f"diagrams/{item_id}: invalid or unsafe Mermaid; dropped")
-                continue
+            elif key == "diagrams":
+                normalized_mermaid = normalize_mermaid(item["mermaid"])
+                if normalized_mermaid is None:
+                    problems.append(f"diagrams/{item_id}: invalid or unsafe Mermaid; dropped")
+                    continue
+                item["mermaid"] = normalized_mermaid
 
             allowed_fields = set(required)
             if key != "open_questions":

@@ -5,6 +5,7 @@ import pytest
 from src.intelligence.state import (
     Utterance,
     empty_state,
+    normalize_mermaid,
     stabilize_state_ids,
     validate_state,
     valid_mermaid,
@@ -63,6 +64,93 @@ def test_validation_drops_unsafe_items_and_sanitizes_evidence() -> None:
 ])
 def test_mermaid_contract_rejects_non_strict_source(source: str) -> None:
     assert not valid_mermaid(source)
+
+
+def test_mermaid_normalizer_quotes_plain_edge_labels() -> None:
+    source = 'flowchart TD\nA["Start"] -->|Website| B["Review"]\nB --> C["Done"]'
+
+    normalized = normalize_mermaid(source)
+
+    assert normalized == (
+        'flowchart TD\nA["Start"] --> |"Website"| B["Review"]\nB --> C["Done"]'
+    )
+    assert valid_mermaid(normalized)
+
+
+@pytest.mark.parametrize(("source", "expected_line"), [
+    ('graph TD\nA[Start] --> B{Approved?}', 'A["Start"] --> B{"Approved?"}'),
+    ('flowchart TD; A(Start) --> B[Done]', 'A["Start"] --> B["Done"]'),
+    ('flowchart TD\nstart_node[Start here] --> B[Done]',
+     'start_node["Start here"] --> B["Done"]'),
+    ('flowchart LR\nA("Start") --> B[Done]', 'A["Start"] --> B["Done"]'),
+])
+def test_mermaid_normalizer_repairs_common_safe_node_variants(
+    source: str, expected_line: str
+) -> None:
+    normalized = normalize_mermaid(source)
+    assert normalized is not None
+    assert normalized.splitlines()[-1] == expected_line
+    assert valid_mermaid(normalized)
+
+
+def test_mermaid_normalizer_expands_safe_compact_chains() -> None:
+    source = (
+        'flowchart TD\nA["Start"] --> B{"Approved?"} '
+        '-->|Yes| C["Done"] --> D["Notify"]'
+    )
+
+    normalized = normalize_mermaid(source)
+
+    assert normalized == (
+        'flowchart TD\nA["Start"] --> B{"Approved?"}\n'
+        'B{"Approved?"} --> |"Yes"| C["Done"]\n'
+        'C["Done"] --> D["Notify"]'
+    )
+    assert valid_mermaid(normalized)
+
+
+def test_mermaid_normalizer_drops_only_a_safe_but_malformed_trailing_edge() -> None:
+    source = (
+        'flowchart TD\nA["Start"] --> B["Review"]\n'
+        'B -->|Yes| C["Done"]\nC -->|Missing target"]'
+    )
+
+    normalized = normalize_mermaid(source)
+
+    assert normalized == (
+        'flowchart TD\nA["Start"] --> B["Review"]\n'
+        'B --> |"Yes"| C["Done"]'
+    )
+
+
+def test_mermaid_normalizer_rejects_source_with_no_valid_edges() -> None:
+    assert normalize_mermaid('flowchart TD\nC -->|Missing target"]') is None
+
+
+@pytest.mark.parametrize("source", [
+    'flowchart TD\nA["Start"] -->|javascript:alert(1)| B["Done"]\nclick A evil',
+    'flowchart TD\nA["Start"] -->|Yes| B["Done"]; style A fill:red',
+    'flowchart TD\nA["Start"] -->|Yes| B["Done"]\nsubgraph hidden',
+    'flowchart TD\nA["<script>alert(1)</script>"] --> B["Done"]',
+])
+def test_mermaid_normalizer_never_repairs_unsafe_constructs(source: str) -> None:
+    assert normalize_mermaid(source) is None
+
+
+def test_state_validation_persists_normalized_safe_diagram() -> None:
+    source = empty_state()
+    source["diagrams"] = [{
+        "id": "G1", "title": "Process", "kind": "flowchart",
+        "mermaid": 'flowchart TD\nA["Start"] -->|Yes| B["Done"]',
+        "evidence_utterances": [1],
+    }]
+
+    clean, problems = validate_state(source)
+
+    assert problems == []
+    assert clean["diagrams"][0]["mermaid"] == (
+        'flowchart TD\nA["Start"] --> |"Yes"| B["Done"]'
+    )
 
 
 def test_stable_ids_are_repaired_and_question_link_follows() -> None:
