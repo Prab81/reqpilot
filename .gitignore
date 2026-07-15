@@ -1,9 +1,13 @@
 .env
+.venv/
 __pycache__/
 *.pyc
 .pytest_cache/
 data/
 models/
+build/
+dist/
+wheelhouse/
 debug_audio/
 node_modules/
 *.wav

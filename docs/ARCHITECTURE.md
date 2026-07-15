@@ -1,157 +1,158 @@
-# ARCHITECTURE — ReqPilot (Phase-Live)
+# ReqPilot architecture
 
-> Living document. This version is the build contract for Phase-Live (mic-only live copilot).
-> Build agents: treat the interfaces in this file as authoritative; do not invent alternatives.
+This document describes the implemented local MVP. The browser is the user
+interface, FastAPI owns the session and delivery workflows, and all durable
+artifacts are stored below the configured local data directory.
 
 ## System overview
 
-```
-Browser (Chrome/Edge/Safari — served from localhost)
-│  getUserMedia → AudioWorklet → downsample to 16 kHz mono float32
-│  ── binary PCM frames ──►  WS /ws/session/{id}
-│  ◄── JSON events ─────────  (partial | final | state | status)
-▼
-FastAPI server (Python 3.14, uvicorn)               src/server.py
-├── AudioGateway: WS endpoint, feeds AudioSource abstraction
-│     MicSource (browser PCM)  [future: LoopbackSource — flag only]
-├── VAD segmenter (energy-based, pre-roll/hangover)  src/audio/vad.py
-├── ASR engine (ported from InkVoice)                src/audio/decoder.py
-│     streaming Zipformer → live partials
-│     Parakeet-TDT-0.6b-v3 int8 → punctuated finals (chunked ≤19 s decode)
-├── Intelligence engine                              src/intelligence/
-│     rolling utterance log → periodic LLM pass → SessionState JSON
-│     providers: Groq (default) | Anthropic | Ollama  (pluggable)
-├── BRD generator (post-session)                     src/intelligence/brd.py
-└── Session store (JSONL, local only)                src/sessions/store.py
+```text
+Browser UI
+  |-- Live: getUserMedia -> AudioWorklet -> 16 kHz mono PCM
+  |-- Import: paste or upload TXT / VTT / DOCX
+  |-- Render: transcript, canvas, questions, BRD, stories, Jira preview
+  |
+  +-- WebSocket /ws/session/{id} (live PCM + events)
+  +-- REST /api/... (session, import, delivery, configuration)
+          |
+FastAPI server
+  |-- Audio: energy VAD -> streaming Zipformer -> Parakeet finals
+  |-- Intelligence: rolling transcript -> configured LLM -> validated state
+  |-- Delivery: BRD Markdown/DOCX -> epics/stories -> Jira Cloud v3
+  +-- Persistence: atomic JSON snapshots + JSONL transcript
 ```
 
-## Repository layout
+## Source layout
 
-```
+```text
 src/
-  server.py               FastAPI app: static serving, WS, REST
-  config.py               paths, model dirs, provider selection (.env)
-  audio/
-    vad.py                EnergyVAD: continuous stream → utterance segments
-    decoder.py            UtteranceDecoder (InkVoice port, continuous mode)
-    engine.py             AsrEngine: VAD + decoder orchestration, thread-safe
-  intelligence/
-    state.py              SessionState dataclasses + (de)serialization
-    providers.py          LlmProvider ABC; GroqProvider, AnthropicProvider, OllamaProvider, MockProvider
-    prompts.py            all prompt templates (single module — reviewable)
-    engine.py             IntelligenceEngine: incremental analysis loop
-    brd.py                BRD markdown generator (post-session)
-  sessions/
-    store.py              SessionStore: append events, snapshot state, list/load
-  web/
-    index.html            three-pane UI (transcript | canvas | copilot)
-    app.js                WS client, render loop, Mermaid + chart rendering
-    audio-capture.js      getUserMedia + AudioWorklet + downsampler
-    worklet.js            AudioWorkletProcessor (raw frames → main thread)
-    style.css
-tests/                    mirrors src/ (pytest)
-  fixtures/               WAV + transcript fixtures, canned LLM responses
-run_windows.bat  run_mac.sh  requirements.txt  .env.example
+  server.py                 FastAPI REST, WebSocket, static UI
+  config.py                 environment and model paths
+  audio/                    VAD, ASR decoders, live orchestration
+  intelligence/             providers, prompts, state, BRD, analysis loop
+  importers/                safe TXT, VTT, DOCX, and paste parsing
+  delivery/                 stories, overrides, DOCX, Jira
+  sessions/                 local session persistence
+  web/                      accessible responsive browser application
+scripts/
+  fetch_models.py           model bootstrap
+  diagnose.py               non-destructive readiness checks
+  build_offline_bundle.py   source + wheelhouse + model archive
+  bundle_parts.py           checksummed split/reassembly
 ```
 
-## Interface contracts
+## Live audio contract
 
-### WS protocol — `/ws/session/{session_id}`
-Client→server: **binary** messages = float32 mono 16 kHz PCM frames (raw bytes,
-any frame size; server buffers). **Text** messages = JSON control:
-`{"type":"start"}` · `{"type":"stop"}` · `{"type":"ping"}`
+The browser requests microphone access only after the analyst starts a live
+session. An AudioWorklet downsamples browser audio to float32, mono, 16 kHz PCM
+and sends binary frames to `/ws/session/{session_id}`.
 
-Server→client, one JSON object per text message:
-```json
-{"type":"ready"}
-{"type":"partial","text":"...","utterance_id":7}
-{"type":"final","text":"...","utterance_id":7,"t0":123.4,"t1":131.9}
-{"type":"state","state":{ ...SessionState JSON... },"rev":12}
-{"type":"status","asr":"running","engine":"analyzing","provider":"groq"}
-{"type":"error","where":"asr|engine|provider","message":"..."}
-{"type":"pong"}
+Text control messages are `start`, `stop`, `pause`, `resume`, and `ping`.
+Server events include `ready`, `partial`, `final`, `state`, `status`, `error`,
+and `pong`. Audio is not retained; finalized utterances are persisted.
+
+The server uses 300 ms VAD pre-roll and 800 ms hangover. Streaming Zipformer
+produces partial text. Parakeet-TDT produces punctuated finals in chunks no
+longer than 19 seconds.
+
+## Import contract
+
+`POST /api/session/import` accepts either multipart `file` or form `text`, plus
+an optional title and filename. Input is capped at 10 MiB. Supported forms:
+
+- plain text and copied Teams/Copilot text;
+- WebVTT, including Teams cue metadata and speaker labels;
+- DOCX paragraphs.
+
+VTT timestamps are preserved. Other inputs receive deterministic synthetic
+timestamps. DOCX parsing rejects unsafe ZIP paths, excessive archive expansion,
+and malformed documents. The original upload is not retained.
+
+## Intelligence state
+
+Each analysis pass returns a full state containing title, summary,
+requirements, decisions, open questions, process diagrams, metrics, and gaps.
+IDs remain stable across passes. Analyst edits, pins, dismissals, and question
+statuses are reapplied after every model response.
+
+Model responses are untrusted. They are schema-checked before persistence.
+Mermaid is restricted to a small flowchart allow-list; scripts, links, styling,
+subgraphs, comments, and directives are rejected. Harmless unquoted edge labels
+are normalized into the safe quoted form before validation.
+
+## Provider boundary
+
+`LlmProvider.complete_json()` is implemented by Groq, Anthropic, Ollama, and a
+deterministic test provider. Speech always remains local. In Ollama mode the
+analysis text remains local as well. Cloud modes send only prompt text to the
+selected provider and require an explicit API key.
+
+## Delivery model
+
+The BRD builder produces Markdown and a styled Word document with source
+timestamps. The story service produces epics and standard user stories with
+2-5 acceptance criteria and requirement/evidence traceability. Story edits,
+deletions, and merges are stored as overrides and survive regeneration.
+
+Jira integration uses the Jira Cloud REST API v3. Preview never contacts Jira.
+Sync creates parent epics before stories and records the resulting issue keys
+in the session delivery snapshot. Later syncs update those keys instead of
+creating duplicates. Secrets are loaded from the environment and never
+returned by status endpoints.
+
+## Persistence
+
+Each session is stored under `REQPILOT_DATA_DIR` (default `data/sessions`):
+
+```text
+{session_id}/
+  meta.json
+  utterances.jsonl
+  state.json
+  overrides.jsonl          when analyst overrides exist
+  delivery.json            story edits and Jira mappings
+  exports/brd.docx         generated on request
 ```
 
-### SessionState JSON (canvas + copilot contract)
-```json
-{
-  "title": "string",
-  "summary": ["bullet", "..."],
-  "requirements": [{"id":"R1","text":"...","status":"captured|clarifying|confirmed","evidence_utterances":[3,9]}],
-  "decisions":    [{"id":"D1","text":"...","evidence_utterances":[12]}],
-  "open_questions":[{"id":"Q1","text":"...","status":"suggested|asked|answered|parked","requirement_id":"R1","category":"actors|data|volumes|exceptions|nfr|acceptance|general"}],
-  "diagrams":     [{"id":"G1","kind":"flowchart|process","title":"...","mermaid":"flowchart TD; ...","evidence_utterances":[5,6]}],
-  "metrics":      [{"id":"M1","title":"...","kind":"bar|pie","labels":["..."],"values":[1,2],"evidence_utterances":[8]}],
-  "gaps":         [{"id":"X1","text":"...","category":"actors|definitions|nfr|edge_cases|conflict","evidence_utterances":[4]}]
-}
-```
-Rules: engine returns the FULL updated state each pass (server stamps `rev`).
-IDs are stable across passes — the LLM is given previous state and must
-preserve IDs of unchanged items. User edits (pin/dismiss) are held server-side
-as overrides and re-applied after each engine pass (AC5 of STORY-004).
+Snapshots use atomic replacement. Analysis watermarks and ID high-water marks
+are persisted so a restart does not replay or renumber existing content.
 
-### LlmProvider ABC (`providers.py`)
-```python
-class LlmProvider(ABC):
-    name: str
-    def complete_json(self, system: str, user: str, schema_hint: str, max_tokens: int = 4096) -> dict: ...
-```
-`complete_json` must parse/repair to a dict, raising `ProviderError` on failure
-after one retry. `MockProvider(responses: list[dict])` replays canned dicts — all
-engine tests use it; no test may hit a real API.
+## Security boundaries
 
-### AsrEngine (`audio/engine.py`)
-```python
-class AsrEngine:
-    def __init__(self, on_partial: Callable[[str,int],None], on_final: Callable[[Utterance],None]): ...
-    def feed(self, pcm: np.ndarray) -> None      # any-size float32 16k frames
-    def flush(self) -> None                      # force-finalize current utterance
-```
-Continuous mode: EnergyVAD segments speech (pre-roll 300 ms, hangover 800 ms,
-max utterance 45 s → forced cut at silence or hard max). Each segment runs the
-InkVoice dual-model path: Zipformer partials while open, Parakeet chunked final
-on close. `Utterance = {id:int, t0:float, t1:float, text:str}` (session-relative seconds).
+- The server binds to `127.0.0.1` by default.
+- `.env`, session data, build output, and credentials are ignored by Git.
+- Upload validation prevents path traversal and unsafe DOCX archive expansion.
+- Mermaid and model JSON are allow-list validated before browser rendering.
+- Jira export requires an explicit configured project and user action.
+- System-audio loopback and automatic meeting joining are deliberately absent.
 
-### IntelligenceEngine cadence
-Triggered when ≥25 s of new final-utterance content OR ≥6 new utterances since
-last pass, min 15 s between passes; also on `stop` (final pass) and on demand
-(`POST /api/session/{id}/analyze`). Each pass sends: previous SessionState +
-new utterances (+ last 10 finalized for context) → prompt in `prompts.py` →
-`complete_json` → validated (see state.py validators; invalid Mermaid → item
-dropped to `gaps` note, never sent broken to the client).
+## API summary
 
-### REST
-```
-POST /api/session                → {id}                (create)
-GET  /api/session/{id}/state     → SessionState
-POST /api/session/{id}/analyze   → force engine pass
-POST /api/session/{id}/brd       → {markdown}          (BRD generation)
-GET  /api/sessions               → list summaries
-POST /api/session/{id}/override  → pin/edit/dismiss an item {kind,id,action,text?}
+```text
+POST   /api/session
+POST   /api/session/import
+GET    /api/sessions
+GET    /api/session/{id}/state
+GET    /api/session/{id}/transcript
+POST   /api/session/{id}/analyze
+POST   /api/session/{id}/override
+POST   /api/session/{id}/brd
+GET    /api/session/{id}/brd.docx
+POST   /api/session/{id}/stories/generate
+GET    /api/session/{id}/stories
+PATCH  /api/session/{id}/epics/{epic_id}
+DELETE /api/session/{id}/epics/{epic_id}
+PATCH  /api/session/{id}/stories/{story_id}
+DELETE /api/session/{id}/stories/{story_id}
+POST   /api/session/{id}/stories/merge
+POST   /api/session/{id}/jira/preview
+POST   /api/session/{id}/jira/sync
+GET    /api/config/status
+GET    /api/jira/status
 ```
 
-## Model + provider configuration (`config.py` / `.env`)
-- `REQPILOT_OFFLINE_MODEL_DIR` / `REQPILOT_STREAMING_MODEL_DIR` — default to the
-  InkVoice model dirs (already on disk):
-  `V:/AI/Netriq InkVoice/spikes/m0_asr/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8`
-  `V:/AI/Netriq InkVoice/spikes/streaming_zipformer/sherpa-onnx-streaming-zipformer-en-2023-06-21`
-  `scripts/fetch_models.py` (adapted from InkVoice) downloads them when absent (fresh machine / Mac).
-- `REQPILOT_PROVIDER` = groq | anthropic | ollama (default groq); keys via `GROQ_API_KEY` etc. `.env` never committed.
+## Deferred external validation
 
-## Key decisions embedded here
-1. **Browser mic capture** (not PortAudio/sounddevice): avoids the InkVoice
-   M0 finding (PortAudio → silence on Bluetooth LE Audio mics on Windows);
-   browser handles WASAPI/CoreAudio + permission UX; Win+Mac parity free.
-2. **InkVoice dual-model ASR port**: Parakeet finals (accuracy + punctuation)
-   + Zipformer partials (smooth live text); chunked ≤19 s offline decodes
-   (the >20 s degradation fix) carried over verbatim.
-3. **Server-side session state with client render**: canvas is a pure renderer
-   of SessionState; all intelligence server-side → transcript-import phase
-   reuses everything except the audio path.
-4. **Sequential engine passes with full-state output**: simpler than diffing;
-   state is small (a meeting's worth of structured items, not the transcript).
-
-## Deliberately deferred
-- System-audio loopback source (REQ-002, flag), diarization beyond single
-  channel, DOCX export (markdown first), Jira export (Phase-Delivery),
-  auth (localhost, single user).
+Physical microphone permission and audio quality require a human using the
+actual device. The macOS launcher requires Mac hardware. Jira's contract is
+automated, but a real sync requires the user's Jira credentials and project.

@@ -198,3 +198,28 @@ but the audio path) → Phase-Delivery (stories/Jira). PRD v1.2 Approved. Storie
 Mac access.
 
 ---
+
+## [2026-07-16] - Complete local MVP delivered
+**Type:** Delivery decision
+**Impact:** High
+
+### Context
+Prabuddh asked Codex to run autonomously and build the complete product from the
+approved requirements, including documentation, tests, and a usable morning
+handoff.
+
+### Decision / Finding
+ReqPilot is delivered as a local FastAPI/browser application rather than a
+desktop wrapper. Live mic capture and transcript import share one intelligence
+and delivery pipeline. Ollama is configured for the verified local deployment;
+Groq and Anthropic remain optional. Jira is disabled until credentials are set.
+Offline Windows packaging includes source, current-platform wheels, and both ASR
+model trees. System-audio loopback, automatic Teams joining, and tenant-level
+integrations remain deliberately outside the product boundary.
+
+### Implications
+The product is usable now for transcript-driven work and ready for a human live
+microphone smoke test. Remaining external gates are Mac hardware, a real Jira
+project, and physical browser microphone permission.
+
+---
