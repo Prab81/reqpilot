@@ -66,6 +66,53 @@ Open <http://127.0.0.1:8765> and allow microphone access when live mode is used.
 Build an offline macOS bundle on a Mac with the same architecture as the target
 machine because Python wheels are platform-specific.
 
+macOS notes:
+
+- Python 3.11+ is required; on a fresh Mac, `brew install python@3.12` (or
+  newer) is the simplest route. `run_mac.sh` creates `.venv`, installs
+  dependencies (sherpa-onnx publishes Apple Silicon arm64 wheels), fetches
+  models if needed, and starts the server — no other setup.
+- Use Chrome or Edge for live capture if possible: they honour the 16 kHz
+  `AudioContext` request directly. Safari works too — the capture layer
+  detects the actual sample rate and resamples in the worklet.
+- Microphone permission is granted to the *browser*, not to ReqPilot. If the
+  prompt never appears, check System Settings → Privacy & Security →
+  Microphone and enable the browser there, then reload the page.
+- The speech engine itself is portable Python (no native shell) — nothing in
+  `src/` requires macOS-specific changes. If anything platform-specific ever
+  surfaces, it belongs in the pluggable audio-source boundary, not the engine.
+
+## Speech models
+
+ReqPilot needs two sherpa-onnx model sets. Three ways to get them, checked in
+this order by `src/config.py` / `scripts/fetch_models.py`:
+
+1. **Automatic (default).** The launcher downloads both sets from the official
+   `k2-fsa/sherpa-onnx` GitHub releases into `./models/` on first run. No
+   action needed on an unrestricted network.
+2. **From your own GitHub releases (office laptop / restricted networks).**
+   Both models are mirrored under this account so no third-party download is
+   required — grab the files in a browser and place them as follows:
+   - **Parakeet (finals)** — assets of
+     [`Prab81/inkvoice` release v0.1.0](https://github.com/Prab81/inkvoice/releases/tag/v0.1.0):
+     `encoder.int8.onnx`, `decoder.int8.onnx`, `joiner.int8.onnx`, `tokens.txt`
+     → put all four in `models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/`
+   - **Zipformer (live partials)** — assets of
+     [`Prab81/reqpilot` release v0.1.0](https://github.com/Prab81/reqpilot/releases/tag/v0.1.0):
+     `encoder-epoch-99-avg-1.int8.onnx`, `decoder-epoch-99-avg-1.int8.onnx`,
+     `joiner-epoch-99-avg-1.int8.onnx`, `tokens.txt`
+     → put all four in `models/sherpa-onnx-streaming-zipformer-en-2023-06-21/`
+   Folder names matter; create them under the repo's `models/` directory (it
+   is git-ignored). Alternatively put them anywhere and point
+   `REQPILOT_OFFLINE_MODEL_DIR` / `REQPILOT_STREAMING_MODEL_DIR` at the
+   directories in `.env`.
+3. **Existing InkVoice checkout (dev machine).** If the InkVoice project is
+   present at its standard path, both model directories are auto-detected and
+   nothing is downloaded.
+
+The offline bundle (`scripts/build_offline_bundle.py`) embeds the models, so a
+bundled install needs none of the above.
+
 ## Local-only configuration
 
 Example using Ollama:
