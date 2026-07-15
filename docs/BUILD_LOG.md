@@ -115,3 +115,37 @@ account email, API token, and project key.
   speak into the selected device.
 - macOS and real Jira-site verification need the corresponding hardware and
   credentials.
+
+## 2026-07-16 - Backlog file exports and BRD diagram embedding
+
+### Delivered
+
+- `src/delivery/stories_export.py`: `build_stories_docx` renders the story
+  package as a delivery-backlog Word document in the BRD's visual language
+  (shared style/table helpers, US Letter, one-inch margins, header/footer with
+  page field). Each epic is a Heading-1 section; each story is a Heading-2
+  section with the As-a/I-want/So-that narrative, an ID/Given/When/Then
+  acceptance-criteria table, and a traceability line combining requirement IDs
+  with mm:ss transcript evidence.
+- `stories_csv` flattens the same package into an RFC 4180 CSV (CRLF, csv-module
+  quoting) with the header `Issue Type,Key,Summary,Description,Acceptance
+  Criteria,Epic,Requirements,Evidence` and one row per epic and per story.
+- New routes `GET /api/session/{id}/stories.docx` and `.csv` return 404 with a
+  clear detail until stories are generated, then serve
+  `reqpilot-backlog-{id}.docx/.csv` with correct content types.
+- `POST /api/session/{id}/brd.docx` accepts `{"diagrams":[{"id","png_base64"}]}`.
+  The browser rasterizes the Mermaid SVGs already rendered on the canvas
+  (`svgToPngBase64`, 2x scale, white background) and posts them; the export
+  embeds each verified PNG at six inches wide with a caption and evidence line.
+  Invalid base64, non-PNG bytes, or unknown diagram ids silently keep the
+  existing text-only line; payloads over 20 MB are rejected with 413. The bare
+  GET route is unchanged.
+- Epics & stories tab gained "Download Word backlog" and "Download CSV"
+  controls, disabled until stories exist.
+
+### Verification
+
+- Full automated suite: 125 passed, 1 skipped (opt-in real-ASR fixture).
+- New coverage: backlog DOCX structure and traceability, CSV header/rows/
+  quoting/CRLF, export-route 404-then-200 contract, BRD POST embedding with a
+  generated minimal PNG, garbage-payload fallback, and the 413 size cap.

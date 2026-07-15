@@ -100,6 +100,35 @@ export function normalizeStories(value) {
   }));
 }
 
+/** Rasterize a rendered SVG element to base64 PNG data (no data-URL prefix).
+ * Mermaid SVGs carry self-contained inline styles, so the canvas stays untainted. */
+export async function svgToPngBase64(svgElement, scale = 2, background = '#ffffff') {
+  const serialized = new XMLSerializer().serializeToString(svgElement);
+  const url = URL.createObjectURL(new Blob([serialized], { type: 'image/svg+xml;charset=utf-8' }));
+  try {
+    const image = await new Promise((resolve, reject) => {
+      const loader = new Image();
+      loader.onload = () => resolve(loader);
+      loader.onerror = () => reject(new Error('The diagram SVG could not be rasterized.'));
+      loader.src = url;
+    });
+    const viewBox = (svgElement.getAttribute('viewBox') || '').split(/[\s,]+/).map(Number);
+    const rect = svgElement.getBoundingClientRect();
+    const baseWidth = rect.width || (viewBox.length === 4 && viewBox[2]) || image.width || 640;
+    const baseHeight = rect.height || (viewBox.length === 4 && viewBox[3]) || image.height || 400;
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(baseWidth * scale));
+    canvas.height = Math.max(1, Math.round(baseHeight * scale));
+    const context = canvas.getContext('2d');
+    context.fillStyle = background;
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL('image/png').split(',')[1];
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
 const hasDOM = typeof window !== 'undefined' && typeof document !== 'undefined';
 
 if (hasDOM) {
@@ -128,6 +157,7 @@ if (hasDOM) {
     liveView: $('liveView'), brdView: $('brdView'), storiesView: $('storiesView'), jiraView: $('jiraView'),
     brdPreview: $('brdPreview'), brdStatus: $('brdStatus'), brdMeta: $('brdMeta'),
     exportBrdDocx: $('exportBrdDocx'), storiesList: $('storiesList'), storySummary: $('storySummary'),
+    exportStoriesDocx: $('exportStoriesDocx'), exportStoriesCsv: $('exportStoriesCsv'),
     storyNavCount: $('storyNavCount'), mergeStories: $('mergeStories'), jiraReadiness: $('jiraReadiness'),
     jiraProject: $('jiraProject'), jiraScope: $('jiraScope'), jiraPreview: $('jiraPreview'),
     jiraPreviewCount: $('jiraPreviewCount'), confirmJira: $('confirmJira'), exportJira: $('exportJira'),
@@ -445,6 +475,9 @@ if (hasDOM) {
     const flat = flattenStories();
     dom.storySummary.textContent = `${app.epics.length} epic${app.epics.length === 1 ? '' : 's'} · ${flat.length} stor${flat.length === 1 ? 'y' : 'ies'}`;
     dom.storyNavCount.textContent = String(flat.length);
+    const exportable = Boolean(app.sessionId) && flat.length > 0 && !app.unavailable.has('stories');
+    dom.exportStoriesDocx.disabled = !exportable;
+    dom.exportStoriesCsv.disabled = !exportable;
     app.epics.forEach((epic) => {
       const section = element('section', 'epic-group');
       const header = element('header', 'epic-header');
@@ -504,6 +537,61 @@ if (hasDOM) {
       app.epics = normalizeStories(result.stories || result);
       app.selectedStories.clear(); renderStories(); toast('Backlog updated');
     } catch (error) { showError(`Could not update the backlog: ${error.message}`); }
+  }
+
+  function downloadBlob(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url; link.download = filename; link.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  async function downloadBacklog(extension) {
+    if (!app.sessionId) return;
+    const button = extension === 'csv' ? dom.exportStoriesCsv : dom.exportStoriesDocx;
+    button.disabled = true;
+    try {
+      const response = await fetch(`/api/session/${encodeURIComponent(app.sessionId)}/stories.${extension}`);
+      if (!response.ok) {
+        let detail = `${response.status} ${response.statusText}`;
+        try { detail = (await response.json()).detail || detail; } catch { /* use status */ }
+        throw new Error(detail);
+      }
+      downloadBlob(await response.blob(), `reqpilot-backlog-${app.sessionId}.${extension}`);
+      toast(extension === 'csv' ? 'CSV backlog downloaded' : 'Word backlog downloaded');
+    } catch (error) { showError(`Could not download the backlog: ${error.message}`); }
+    finally { button.disabled = false; }
+  }
+
+  async function collectDiagramImages() {
+    const stages = document.querySelectorAll('#visualsList .diagram-stage[data-diagram-id]');
+    const diagrams = [];
+    for (const stage of stages) {
+      const svg = stage.querySelector('svg');
+      if (!svg || !stage.dataset.diagramId) continue;
+      try {
+        diagrams.push({ id: stage.dataset.diagramId, png_base64: await svgToPngBase64(svg) });
+      } catch { /* the server keeps the text-only diagram line for this one */ }
+    }
+    return diagrams;
+  }
+
+  async function exportBrdDocxWithDiagrams(event) {
+    event.preventDefault();
+    if (!app.sessionId || app.unavailable.has('brd')) return;
+    dom.exportBrdDocx.setAttribute('aria-disabled', 'true');
+    try {
+      const diagrams = await collectDiagramImages();
+      const response = await fetch(`/api/session/${encodeURIComponent(app.sessionId)}/brd.docx`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ diagrams }),
+      });
+      if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+      downloadBlob(await response.blob(), `${safeFilename(app.state.title)}-BRD.docx`);
+      toast(diagrams.length ? 'BRD downloaded with rendered diagrams' : 'BRD downloaded');
+    } catch (error) { showError(`Could not download the BRD document: ${error.message}`); }
+    finally { dom.exportBrdDocx.removeAttribute('aria-disabled'); }
   }
 
   function statusValue(value) {
@@ -898,8 +986,10 @@ if (hasDOM) {
     const stage = element('div', `visual-stage ${kind}-stage`);
     card.append(header, stage);
     const refs = evidence(item); if (refs) card.append(refs);
-    if (kind === 'diagram') renderMermaid(stage, item.mermaid, `diagram-${token}-${index}`);
-    else renderMetric(stage, item);
+    if (kind === 'diagram') {
+      stage.dataset.diagramId = String(item.id || '');
+      renderMermaid(stage, item.mermaid, `diagram-${token}-${index}`);
+    } else renderMetric(stage, item);
     return card;
   }
 
@@ -1162,6 +1252,9 @@ if (hasDOM) {
   document.querySelectorAll('[data-view]').forEach((button) => button.addEventListener('click', () => switchView(button.dataset.view)));
   $('refreshBrd').addEventListener('click', () => loadBrd(true));
   $('generateStories').addEventListener('click', generateStories);
+  dom.exportStoriesDocx.addEventListener('click', () => downloadBacklog('docx'));
+  dom.exportStoriesCsv.addEventListener('click', () => downloadBacklog('csv'));
+  dom.exportBrdDocx.addEventListener('click', exportBrdDocxWithDiagrams);
   document.querySelectorAll('[data-generate-stories]').forEach((button) => button.addEventListener('click', generateStories));
   $('selectAllStories').addEventListener('click', () => { flattenStories().forEach(({ story }) => app.selectedStories.add(story.id)); renderStories(); });
   dom.mergeStories.addEventListener('click', () => storyOverride('merge', [...app.selectedStories]));

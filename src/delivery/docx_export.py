@@ -1,6 +1,9 @@
 """Polished, deterministic BRD DOCX export using standard_business_brief tokens."""
 from __future__ import annotations
 
+import base64
+import binascii
+from io import BytesIO
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -30,10 +33,12 @@ NAVY = "0B2545"
 MUTED = "5B6573"
 LIGHT_FILL = "F2F4F7"
 BORDER = "C9D1DA"
+PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 
 
 def export_brd_docx(session_id: str, store: SessionStore, provider: "LlmProvider",
-                    output_path: Path | str) -> Path:
+                    output_path: Path | str,
+                    diagram_images: dict[str, str] | None = None) -> Path:
     """Export the stored session as a styled Word BRD.
 
     Narrative prose is LLM-assisted; requirements, decisions, gaps, and all
@@ -50,12 +55,13 @@ def export_brd_docx(session_id: str, store: SessionStore, provider: "LlmProvider
         narrative = {}
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    build_brd_docx(session, path, narrative)
+    build_brd_docx(session, path, narrative, diagram_images)
     return path
 
 
 def build_brd_docx(session: dict[str, Any], output_path: Path | str,
-                   narrative: dict[str, Any] | None = None) -> Path:
+                   narrative: dict[str, Any] | None = None,
+                   diagram_images: dict[str, str] | None = None) -> Path:
     narrative = narrative if isinstance(narrative, dict) else {}
     state = session.get("state", {})
     utterances: list[Utterance] = session.get("utterances", [])
@@ -115,11 +121,16 @@ def build_brd_docx(session: dict[str, Any], output_path: Path | str,
     diagrams = state.get("diagrams", [])
     if isinstance(diagrams, list) and diagrams:
         _heading(doc, "Captured process models", 2)
+        images = diagram_images or {}
         for diagram in diagrams:
             if not isinstance(diagram, dict):
                 continue
             refs = _evidence(diagram, times)
-            _list_item(doc, f"{diagram.get('title', diagram.get('id', 'Process model'))} - evidence {refs}")
+            diagram_title = str(diagram.get("title", diagram.get("id", "Process model")))
+            png = _decode_png(images.get(str(diagram.get("id", ""))))
+            if png is not None and _add_diagram_image(doc, png, diagram_title, refs):
+                continue
+            _list_item(doc, f"{diagram_title} - evidence {refs}")
 
     _heading(doc, "5. Functional Requirements", 1)
     requirement_rows = []
@@ -470,6 +481,35 @@ def _shade(cell: Any, fill: str) -> None:
 def _repeat_header(row: Any) -> None:
     tr_pr = row._tr.get_or_add_trPr()
     marker = OxmlElement("w:tblHeader"); marker.set(qn("w:val"), "true"); tr_pr.append(marker)
+
+
+def _decode_png(value: Any) -> bytes | None:
+    """Return decoded bytes only for genuine base64-encoded PNG payloads."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        raw = base64.b64decode(value.strip(), validate=True)
+    except (binascii.Error, ValueError):
+        return None
+    return raw if raw.startswith(PNG_MAGIC) else None
+
+
+def _add_diagram_image(doc: DocumentObject, png: bytes, title: str, refs: str) -> bool:
+    """Embed one rendered diagram; report failure so callers keep the text line."""
+    try:
+        doc.add_picture(BytesIO(png), width=Inches(6))
+    except Exception:
+        # Corrupt image data past the magic-byte check must not break the export.
+        return False
+    caption = doc.add_paragraph()
+    caption.paragraph_format.space_before = Pt(2)
+    caption.paragraph_format.space_after = Pt(0)
+    _run(caption.add_run(title), 10, NAVY, bold=True)
+    refs_paragraph = doc.add_paragraph()
+    refs_paragraph.paragraph_format.space_before = Pt(0)
+    refs_paragraph.paragraph_format.space_after = Pt(8)
+    _run(refs_paragraph.add_run(f"Evidence {refs}"), 9, MUTED)
+    return True
 
 
 def _evidence(item: dict[str, Any], times: dict[int, float]) -> str:

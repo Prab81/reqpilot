@@ -34,7 +34,13 @@ knowledge and consent.
 ### Delivery
 
 - BRD preview plus Markdown and styled Word/DOCX exports.
+- The BRD Word download embeds the process diagrams rendered on the canvas as
+  images (with caption and evidence); sessions without rendered diagrams keep
+  the text-only diagram references.
 - Epics and user stories with acceptance criteria and source evidence.
+- Backlog file exports: a styled Word backlog document (per-epic sections,
+  Given/When/Then tables, requirement and timestamp traceability) and a flat
+  CSV with one row per epic and story for spreadsheet or tracker import.
 - Analyst edit, merge, and delete controls that persist across regeneration.
 - Jira preview and idempotent Jira Cloud REST export. Re-export updates the
   issues recorded for the session rather than creating duplicates.
@@ -112,6 +118,31 @@ this order by `src/config.py` / `scripts/fetch_models.py`:
 
 The offline bundle (`scripts/build_offline_bundle.py`) embeds the models, so a
 bundled install needs none of the above.
+
+## Offline install when PyPI is blocked
+
+Corporate networks that block `pypi.org` / `files.pythonhosted.org` do not
+block this install path — pip never contacts an index:
+
+1. Download the wheelhouse zip for your OS from
+   [release v0.1.1](https://github.com/Prab81/reqpilot/releases/tag/v0.1.1)
+   (`...-windows-amd64-...` or `...-macos-arm64-...`; each covers CPython
+   3.11–3.14).
+2. Extract the zip's **contents** into a folder named `wheelhouse/` at the
+   repo root (so the `.whl` files sit directly inside `wheelhouse/`).
+3. Run `run_windows.bat` / `run_mac.sh`. The launcher detects `wheelhouse/`
+   and installs with `pip --no-index --find-links wheelhouse` — a purely
+   local operation.
+
+Combined with the model downloads above (also plain GitHub release assets),
+the only remaining prerequisites are Python 3.11+ itself (the Microsoft
+Store / `winget install Python.Python.3.12` route is usually permitted on
+managed Windows devices) and, for fully local analysis, an Ollama install
+with your chosen model — or set `REQPILOT_PROVIDER=groq` if cloud analysis
+is acceptable. GitHub release assets are served from
+`objects.githubusercontent.com`; if that host is blocked too, transfer the
+same zips by any approved file channel — nothing in the install itself needs
+network access.
 
 ## Local-only configuration
 

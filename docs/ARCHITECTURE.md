@@ -112,6 +112,7 @@ Each session is stored under `REQPILOT_DATA_DIR` (default `data/sessions`):
   overrides.jsonl          when analyst overrides exist
   delivery.json            story edits and Jira mappings
   exports/brd.docx         generated on request
+  exports/backlog.docx     generated on request
 ```
 
 Snapshots use atomic replacement. Analysis watermarks and ID high-water marks
@@ -138,8 +139,11 @@ POST   /api/session/{id}/analyze
 POST   /api/session/{id}/override
 POST   /api/session/{id}/brd
 GET    /api/session/{id}/brd.docx
+POST   /api/session/{id}/brd.docx      body {"diagrams":[{"id","png_base64"}]} embeds rendered diagrams
 POST   /api/session/{id}/stories/generate
 GET    /api/session/{id}/stories
+GET    /api/session/{id}/stories.docx
+GET    /api/session/{id}/stories.csv
 PATCH  /api/session/{id}/epics/{epic_id}
 DELETE /api/session/{id}/epics/{epic_id}
 PATCH  /api/session/{id}/stories/{story_id}

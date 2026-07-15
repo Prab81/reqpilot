@@ -93,6 +93,27 @@ def test_application_calls_each_extended_api_contract() -> None:
     assert "app.unavailable.add('jira')" in source
 
 
+def test_backlog_downloads_and_diagram_embedding_are_wired() -> None:
+    parser = _WorkflowParser()
+    parser.feed((WEB / "index.html").read_text(encoding="utf-8"))
+    source = (WEB / "app.js").read_text(encoding="utf-8")
+
+    assert {"exportStoriesDocx", "exportStoriesCsv"}.issubset(parser.ids)
+    for fragment in (
+        "stories.${extension}`",
+        "export async function svgToPngBase64",
+        "XMLSerializer",
+        "toDataURL('image/png')",
+        "png_base64",
+        "collectDiagramImages",
+        "data-diagram-id",
+    ):
+        assert fragment in source
+    # The BRD Word download posts collected diagram images instead of a bare GET.
+    assert re.search(r"exportBrdDocxWithDiagrams.*method: 'POST'.*JSON\.stringify\(\{ diagrams \}\)",
+                     source, flags=re.S)
+
+
 def test_jira_interface_does_not_collect_or_render_stored_secrets() -> None:
     html = (WEB / "index.html").read_text(encoding="utf-8")
     parser = _WorkflowParser()

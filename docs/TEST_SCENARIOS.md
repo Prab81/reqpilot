@@ -27,6 +27,12 @@ Cloud and Jira contract tests use simulated transports and do not send data.
 | BRD DOCX | rendered page-image visual review | requires LibreOffice/Word UI | Pending external |
 | Stories | epic/story generation, 2-5 ACs, traceability | unit/API | Pass |
 | Stories | edits/deletions survive regeneration; merge retains evidence | unit/API | Pass |
+| Stories export | Word backlog: per-epic headings, per-story AC tables, mm:ss traceability | unit/API | Pass |
+| Stories export | CSV: exact header, one row per epic and story, RFC 4180 quoting and CRLF | unit/API | Pass |
+| Stories export | routes return 404 before generation, correct content types and filenames after | API | Pass |
+| BRD DOCX | browser-rendered diagram PNGs embed with caption and evidence line | unit/API | Pass |
+| BRD DOCX | invalid base64, non-PNG, or unknown-id images fall back to the text line | unit/API | Pass |
+| BRD DOCX | diagram payloads over 20 MB rejected with 413; bare GET stays text-only | API | Pass |
 | Jira | preview contains exact parent/child payloads without network call | unit/API | Pass |
 | Jira | create parents first and persist returned keys | simulated Jira contract | Pass |
 | Jira | re-export updates rather than duplicates | simulated Jira contract | Pass |
@@ -51,7 +57,7 @@ Cloud and Jira contract tests use simulated transports and do not send data.
 ## Current automated result
 
 ```text
-114 passed, 1 skipped
+125 passed, 1 skipped
 ```
 
 The skipped test is the opt-in real-ASR fixture in the normal suite. It passed

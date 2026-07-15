@@ -1,5 +1,8 @@
 # CHANGELOG — ReqPilot
 
+## 2026-07-16 — Backlog exports and BRD diagram images
+- Epics & stories now export as a styled Word backlog document and a flat RFC 4180 CSV (`GET /api/session/{id}/stories.docx|.csv`), with download controls in the Epics & stories tab; the BRD Word download posts the canvas-rendered Mermaid diagrams as PNGs (`POST /api/session/{id}/brd.docx`) so they embed as images with captions and evidence, falling back to text lines when images are absent or invalid. Suite: 125 passed, 1 skipped.
+
 ## 2026-07-16 — Local MVP shipped and verified
 - Live mic pipeline: browser AudioWorklet capture → energy VAD → InkVoice-derived dual-model ASR (Zipformer partials + Parakeet punctuated finals, ≤19 s chunked decode). Human mic smoke (E2E-05) pending.
 - Transcript import: paste / TXT / VTT (Teams) / DOCX with speaker + timestamp preservation.

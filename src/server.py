@@ -20,7 +20,7 @@ from fastapi import (
     WebSocketDisconnect,
 )
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 
 from src import config
 from src.audio.engine import AsrEngine
@@ -33,7 +33,9 @@ from src.delivery import (
     JiraError,
     JiraSyncService,
     StoryService,
+    build_stories_docx,
     export_brd_docx,
+    stories_csv,
 )
 from src.importers import MAX_IMPORT_BYTES, TranscriptImportError, import_transcript
 from src.intelligence.brd import generate_brd
@@ -208,24 +210,91 @@ def create_app(
         known_session(session_id)
         return {"markdown": generate_brd(session_id, app.state.store, app.state.provider)}
 
-    @app.get("/api/session/{session_id}/brd.docx")
-    @app.post("/api/session/{session_id}/brd.docx")
-    async def brd_docx(session_id: str) -> FileResponse:
-        known_session(session_id)
+    DOCX_MEDIA_TYPE = (
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    )
+    MAX_DIAGRAM_PAYLOAD_BYTES = 20 * 1024 * 1024
+
+    def diagram_images_from(payload: dict[str, Any] | None) -> dict[str, str]:
+        """Extract {diagram id: png base64}, bounding the total decoded size."""
+        if not isinstance(payload, dict) or not isinstance(payload.get("diagrams"), list):
+            return {}
+        images: dict[str, str] = {}
+        total = 0
+        for item in payload["diagrams"]:
+            if not isinstance(item, dict):
+                continue
+            diagram_id = item.get("id")
+            png_base64 = item.get("png_base64")
+            if not isinstance(diagram_id, str) or not isinstance(png_base64, str) or not png_base64:
+                continue
+            total += len(png_base64) * 3 // 4  # decoded-size estimate
+            if total > MAX_DIAGRAM_PAYLOAD_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail="embedded diagram images exceed the 20 MB limit",
+                )
+            images[diagram_id] = png_base64
+        return images
+
+    async def render_brd_docx(session_id: str, images: dict[str, str]) -> FileResponse:
         output = app.state.store.session_dir(session_id) / "exports" / "brd.docx"
         path = await asyncio.to_thread(
             delivery_call,
             lambda: export_brd_docx(
-                session_id, app.state.store, app.state.provider, output
+                session_id, app.state.store, app.state.provider, output,
+                diagram_images=images,
             ),
         )
         return FileResponse(
             path,
-            media_type=(
-                "application/vnd.openxmlformats-officedocument."
-                "wordprocessingml.document"
-            ),
+            media_type=DOCX_MEDIA_TYPE,
             filename=f"{session_id}-brd.docx",
+        )
+
+    @app.get("/api/session/{session_id}/brd.docx")
+    async def brd_docx(session_id: str) -> FileResponse:
+        known_session(session_id)
+        return await render_brd_docx(session_id, {})
+
+    @app.post("/api/session/{session_id}/brd.docx")
+    async def brd_docx_with_diagrams(
+        session_id: str, payload: dict[str, Any] | None = Body(default=None)
+    ) -> FileResponse:
+        """BRD export with browser-rendered diagram PNGs embedded when valid."""
+        known_session(session_id)
+        return await render_brd_docx(session_id, diagram_images_from(payload))
+
+    @app.get("/api/session/{session_id}/stories.docx")
+    async def stories_docx(session_id: str) -> FileResponse:
+        known_session(session_id)
+
+        def render() -> Path:
+            package = app.state.delivery_repo.load(session_id)
+            session = app.state.store.load_session(session_id)
+            output = app.state.store.session_dir(session_id) / "exports" / "backlog.docx"
+            output.parent.mkdir(parents=True, exist_ok=True)
+            build_stories_docx(package, session).save(output)
+            return output
+
+        path = await asyncio.to_thread(delivery_call, render)
+        return FileResponse(
+            path,
+            media_type=DOCX_MEDIA_TYPE,
+            filename=f"reqpilot-backlog-{session_id}.docx",
+        )
+
+    @app.get("/api/session/{session_id}/stories.csv")
+    def stories_csv_export(session_id: str) -> Response:
+        known_session(session_id)
+        package = delivery_call(lambda: app.state.delivery_repo.load(session_id))
+        return Response(
+            content=stories_csv(package),
+            media_type="text/csv; charset=utf-8",
+            headers={
+                "Content-Disposition":
+                    f'attachment; filename="reqpilot-backlog-{session_id}.csv"',
+            },
         )
 
     @app.get("/api/session/{session_id}/stories")
